@@ -29,10 +29,14 @@ class LiteLlmAdapter:
         model: str,
         **kwargs: Any,
     ) -> T:
+        # Pass the Pydantic class directly so LiteLLM translates it into each
+        # provider's native structured-output mode (Gemini responseSchema, OpenAI
+        # json_schema, Anthropic tool-use shim). The model is then constrained
+        # at the API boundary, not just by prompt phrasing.
         response = await litellm.acompletion(
             model=model,
             messages=self._messages(slot, variables),
-            response_format={"type": "json_object"},
+            response_format=response_model,
             **kwargs,
         )
         content = response["choices"][0]["message"]["content"]
