@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from paperhub.api import health
+from paperhub.api import chat, health
 from paperhub.config import load_settings
 from paperhub.db.connection import open_db
 from paperhub.db.migrate import apply_schema
@@ -21,6 +21,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     app = FastAPI(title="PaperHub", lifespan=_lifespan)
     app.include_router(health.router)
+    app.include_router(chat.router)
     return app
 
 
