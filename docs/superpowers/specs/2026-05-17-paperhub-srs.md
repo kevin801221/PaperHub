@@ -7,15 +7,14 @@ scope: full-system
 
 # PaperHub
 
-**Paper Knowledge Base & Research Assistant System**
-
-*Software Requirements Specification (SRS) · Technology Selection · Architecture Design*
+**A UX-first chat shell with its own paper knowledge base + RAG + slide pipeline, assembled by adapting utility functions from two reference projects.**
 
 | Field | Value |
 | --- | --- |
-| Version | v1.5 |
+| Version | v2.2 |
 | Date | May 2026 |
-| Predecessor | [paper2slides-plus](https://github.com/whats2000/paper2slides-plus) |
+| Posture | **UX-first + decomposed reuse.** PaperHub owns its data layer, RAG pipeline, and slide pipeline so every step is traceable. Utility functions are *copied and adapted* from two reference projects rather than consumed as services. |
+| Reference projects (utility source) | [`paper2slides-plus`](https://github.com/whats2000/paper2slides-plus) — extraction utils for arXiv / PDF / LaTeX projects + LaTeX helpers, **decomposed; not run as a service** · [`Intro2GenAI-hw1`](https://github.com/whats2000/Intro2GenAI-hw1) — chat-shell + MCP UX idioms ported to React |
 
 ---
 
@@ -23,436 +22,406 @@ scope: full-system
 
 | Version | Date | Summary |
 | --- | --- | --- |
-| v1.0 | 2026-05-03 | Initial release covering all three parts. |
-| v1.1 | 2026-05-03 | UI switched from Streamlit to custom React (Open WebUI style); data layer simplified from four components (Postgres + Qdrant + MinIO + Redis) to two (SQLite + vector store); architecture diagrams rendered with Graphviz. |
-| v1.2 | 2026-05-17 | Repositioned as a **multi-model and tool-routing AI platform**: orchestrator refactored into a Router Agent + Research / SQL / Report sub-agents; added NL2SQL over SQLite (with optional DuckDB analytics view); added MCP tool integration (filesystem, SQLite, web search) with explicit tool descriptions and security boundaries; added traceable tool-call audit log; added a model/tool comparison evaluation harness wired into CI as a regression gate. |
-| v1.3 | 2026-05-17 | **Merged §⑤ External APIs and §⑧ MCP Tool Layer.** Every external integration except the LLM provider adapter is now exposed as an MCP tool: bibliographic APIs (`arxiv`, `semantic_scholar`, `crossref`, `web_search`), local deterministic tools (`grobid`, `latex`), and existing `filesystem` / `sqlite` — eight client-side MCP tools total, plus a richer `paperhub.*` server-side tool surface (`search_library`, `get_paper`, `find_related`, `summarize_paper`, `compose_slides`, `list_runs`, `get_trace`). This gives every external call uniform tracing, uniform scope-checking, and uniform exposure to external MCP clients (Claude Desktop, Cursor). LLM providers stay separate because their hot-path streaming / structured-output interface doesn't map cleanly onto MCP. |
-| v1.4 | 2026-05-17 | **Design-review fixes.** Tightened measurable acceptance criteria (#2 rewritten against a seeded intra-library citation graph; #3 refusal target relaxed from 100% → ≥95% on a defined 20-question OOD set), split **NFR-01** performance targets into warm-cache vs cold-start budgets, added an **FR-12 answer-quality rubric** (LLM-as-judge with κ-validated rubric prompt) so the model-comparison bullet is concretely measurable, added a **NFR-11 narrow exception** for upstream LangGraph / MCP SDK type-stub gaps (per-error-code `# type: ignore` only), dropped multi-user language from §④ (single-user product per Out-of-Scope §7), changed the two-stage RAG funnel to `top-min(50, ⌈corpus_size / 3⌉)` so it behaves sensibly on small libraries, added FR-05 hard cap (≤ 20 generated pages per slide run), and clarified the DuckDB-over-SQLite mechanism (read-only `ATTACH ... TYPE SQLITE` rather than a unified view). No FR additions, no scope cuts. |
-| v1.5 | 2026-05-17 | **MCP bill-of-materials: reuse-first.** §⑧ MCP Tool Layer table gains a **Provenance** column declaring per-tool whether PaperHub reuses an existing community MCP server, wraps an existing client in a thin custom MCP server, or builds one from scratch — survey across `modelcontextprotocol/servers`, npm, PyPI, and community lists (May 2026). Result: **3 reuse** (`filesystem` via `@modelcontextprotocol/server-filesystem` pinned post-CVE-2025-53109/53110, `arxiv` via `blazickjp/arxiv-mcp-server`, `semantic_scholar` via `zongmin-yu/semantic-scholar-fastmcp`), **4 thin wraps** (`sqlite` for the table allow-list + aggregated `schema()` method, `web_search` for the domain allow-list, `crossref` because no maintained server exists, `grobid` for PDF-path sandboxing), **1 build-from-scratch** (`latex` — none expose `chktex` + workspace sandbox), plus the always-custom `paperhub.*` server. Tool capabilities and scope boundaries are unchanged; the FR-10 implementation strategy is now "configure and constrain existing servers" rather than "write 8 servers from scratch." No FR, NFR, UC, or acceptance changes. |
+| v1.0 – v1.5 | 2026-05-03 → 2026-05-17 | Greenfield research-platform sweep; scope drifted to a from-scratch backend rewrite. Retired. |
+| **v2.2** | **2026-05-17** | **Two-layer content/membership split.** Introduces `paper_content` (physical: one row per unique paper, owns `chunks` + Chroma vectors + on-disk artefacts) and reshapes `papers` into a thin session-membership layer (`session_id`, `paper_content_id`, `enabled`, `added_at`). Adds a shared on-disk cache `workspace/papers_cache/{arxiv/<arxiv_id>,upload/<sha256>}/`; re-importing a paper into a new session skips download, extraction, HTML render, chunking, and embedding. Cache GC policy: **never** for the demo (monotonic growth). FR-08 rewritten around the two layers; §III-5.1 Paper Pipeline gains a cache-lookup first stage; §III-5.3 Slide Pipeline gains an explicit figure-path resolution rule so `\includegraphics` and Markdown image references continue to resolve after sources moved out of the per-session tree. Schema: 6 → 7 tables. |
+| **v2.1** | **2026-05-17** | Stale-v1 cleanup. Removed dangling "delegated to `paper2slides-plus`" phrasing from §I-7, §II-3, NFR-03, and Acceptance I-8 #6. Resolved Compare-view audit model: a Compare turn is **one `run_id`** with a `branch` discriminator on `tool_calls` (FR-04, FR-09, §III-7). Citation Canvas source resolved: full paper is **pre-rendered to HTML at import time** by the Paper Pipeline, written to `papers.html_path` (§III-5.1, §III-7, FR-03). Slide-rendering framework remains explicitly deferred — flagged in §III-5.3. Editorial fixes: `session_references` join-table residue in UC-2 / §III-2, "7 tables" / "6 tables" mismatch in §III-1, broken `§III-6` cross-references in §III-3 (correct ref is §III-5.3). |
+| **v2.0** | **2026-05-17** | **Reset + decomposition.** Restructured into the standard three-part SRS template (需求規格書 / 技術選型分析 / 系統架構設計). PaperHub owns its data layer, RAG knowledge base, and slide pipeline so every retrieved chunk and every generation step is traceable. `paper2slides-plus` is **decomposed**: useful extraction / LaTeX utilities are copied into the repo and adapted; its chat-with-paper and slide-pipeline orchestrators are NOT reused (they can't expose chunk-level citations for the Citation Canvas, and the slide pipeline needs a modern framework rewrite). `arxiv` MCP is replaced by the copied arXiv-download utility. The only artefact carried from v1.x is the data schema (§III-7). |
 
 ---
 
-# Part 1 — Software Requirements Specification
+# Part 0 — Requirement Coverage Matrix
 
-## 1. Project Background
+A top-level cross-reference from each high-level project requirement to the FR / NFR / §-number that addresses it. Keeps coverage explicit and surfaces any silent gap during review.
 
-Modern researchers must read dozens to hundreds of academic papers each year, and the relationships among them — citations, methodological lineage, topical evolution — are notoriously complex. Mainstream reference managers such as Zotero and Mendeley excel at bibliographic organization and PDF annotation, but provide no cross-paper semantic linking and no tooling for research-direction exploration. Existing academic LLM products (e.g. SciSpace, Elicit) can answer questions about a single paper, but they cannot integrate a user's personal reading history into a persistently queryable knowledge base.
+| Requirement | Addressed in |
+| --- | --- |
+| Multi-model + tool-routing AI platform | FR-06 (Router, 4 intents), FR-04 (multi-model Compare view), §III-4 (LLM Module, tiered models) |
+| Single demo integrating paper Q&A + NL2SQL + report generation + MCP tools | UC-1..5 cover all four; FR-05..08 implement them; §III-3 wires them into one LangGraph |
+| Visible *"how the agent picks tools"* | FR-01 RoutingBadge surfaces the picked intent + model_tier + reasoning per turn |
+| Problem classification | FR-06 Router; acceptance I-8 #1 (≥ 80 % intent accuracy on 16-prompt fixture) |
+| Tool selection logic | FR-01 RoutingBadge + FR-02 TraceInline + acceptance I-8 #1 |
+| Model answer-quality comparison | FR-04 Compare view + acceptance I-8 #5 (hand-evaluated 10×2 table) |
+| Traceable tool-call records | FR-02 TraceInline + FR-09 audit-log writer + acceptance I-8 #4 (replay from SQLite) |
+| Frontend: Streamlit *or* React | **React** chosen (Vite + Tailwind + Zustand) — see §III-2; rationale: the Citation Canvas UX is component-shaped, harder to ship in Streamlit |
+| Backend: FastAPI + LangGraph *or* Google ADK | **LangGraph** chosen — see §III-3; rationale: larger MCP-adjacent ecosystem; the node-graph metaphor makes the tool-selection logic visually unambiguous. Google ADK is a drop-in alternative behind the `LlmAdapter` Protocol |
+| All four agents present: Router, Research, SQL, Report | §III-3 names all four as discrete LangGraph nodes; FR-06 (Router), FR-07 (delegation contract for Research / Report), FR-05 / FR-07 (SQL Agent) |
+| Data layer: SQLite *or* DuckDB | SQLite is primary (§III-7, 6 tables); DuckDB is opt-in for analytical queries via `ATTACH … (TYPE SQLITE, READ_ONLY)` — flip `PAPERHUB_SQL_ANALYTICS_DUCKDB=1` to enable |
+| Paper data via arXiv API or preprocessed | The Paper Pipeline (§III-5) reuses copied utilities from `paper2slides-plus` for **all three input shapes** — arXiv ID (via `arxiv` Python client), raw PDF, and raw LaTeX project archives. No external `arxiv` MCP server is involved |
+| MCP demos: filesystem, SQLite, web search, calendar, or custom | `filesystem`, `sqlite`, and a **custom `paperhub.*` server** are wired (§III-6). `web_search` and calendar MCPs were evaluated and omitted — neither has an organic use case in this product right now (arXiv search is reached via the in-repo Paper Pipeline's Python client, not a search MCP). The three shipped tools span the local-FS, local-DB, and custom-server categories implied by the listed options |
+| Emphasis on tool description + safety boundary | NFR-05 (scope declarations per tool); §III-6 lists each scope explicitly; FR-02 surfaces `rejected` rows in yellow |
+| Evaluation: right tool? source cited? SQL executable? | Acceptance I-8 #1 (tool routing), #3 (citations from ≥ 2 papers), #4 (NL2SQL ≥ 70 % first-try executable); model-comparison sweep emits a markdown report |
 
-This project extends the author's previous open-source work, **paper2slides-plus** (a tool that converts a single paper into a Beamer presentation), into a modular research-assistant platform. On top of the original "paper → slides" flow, **PaperHub** adds indexing, cross-paper relation analysis, semantic Q&A, research-direction suggestion, and multi-paper integrated slide generation — enabling users to complete the full research loop ("read papers → manage papers → explore directions → produce reports") inside a single system.
+When the project's requirements evolve, new items get a row in this table and a corresponding FR / NFR / acceptance entry — never silently absorbed.
 
-Beyond the research-assistant use case, PaperHub also serves as a concrete reference implementation of a **multi-model and tool-routing AI platform**. A single user task may require very different capabilities — paper retrieval, structured-database querying, report generation, or external MCP tool calls — and no single model or tool is best at all of them. PaperHub therefore exposes an explicit **Router Agent** that classifies the incoming task, picks an appropriate sub-agent (Research / SQL / Report) and the right model tier, invokes the chosen tools (vector search, NL2SQL over SQLite/DuckDB, MCP servers, LaTeX compiler), and records every routing decision in a traceable audit log. PaperHub is intended as a **complete production system**, not a course demo: the routing-quality, source-citation, SQL-executability, and trace-reproducibility properties below are continuous quality bars that every release must clear via the CI-gated evaluation harness, not one-off targets to hit at a final presentation.
+---
 
-## 2. Problem Statement
+# Part 1 — 需求規格書 (Software Requirements Specification)
 
-Graduate students and independent researchers commonly face the following five pain points in their literature workflow:
+## I-1. 專案背景 (Project Background)
 
-- **Information fragmentation.** PDFs, notes, and citation lists are scattered across multiple tools; previously-read papers are hard to relocate.
-- **Invisible relationships.** Method inheritance, conceptual evolution, and dataset overlap between papers exist only in the researcher's head and cannot be queried.
-- **Hard-to-explore research directions.** When entering a new field, there is no tool to help map "where the gaps lie" relative to what the user has already read.
-- **Time-consuming slide preparation.** Before lab meetings or defense rehearsals, users must manually consolidate multiple papers into a single deck, with high duplication of effort.
-- **LLM hallucination risk.** Asking a general-purpose LLM about paper details often results in fabricated citations or numbers — unacceptable in academic contexts.
-- **Opaque tool / model selection.** When the same chat box can answer a paper-content question, run an SQL aggregation over the user's library, *and* call an external MCP tool, users (and graders) cannot tell whether the agent picked the right capability for the job, or whether a wrong answer was caused by the model, the prompt, or the wrong tool being invoked.
-- **Non-reproducible agent runs.** Without a structured log of *which model / which tool / which arguments* were used at each step, multi-agent answers are impossible to audit, debug, or compare across runs.
+Two reference projects exist in the author's portfolio that PaperHub draws from:
 
-## 3. Stakeholders and User Roles
+- **`paper2slides-plus`** — a FastAPI service that turns arXiv IDs / PDFs / LaTeX-zips into Beamer slide decks, with a chat-with-paper Q&A mode. **Decomposed, not run as a service.** Its extraction utilities (arXiv source download, PDF text extraction, LaTeX project handling) are copied into PaperHub and adapted; its chat-with-paper module is *not* reused because it cannot surface chunk-level citation IDs for the Citation Canvas; its slide-pipeline orchestrator is *not* reused because a modern-framework rewrite is needed (§III-6).
+- **`Intro2GenAI-hw1`** — a chat UI (Node + Express + vanilla JS) that streams via SSE, manages history, forks conversations, renders thinking blocks, and integrates MCP tools. Its UX idioms are ported to React; its Node backend is not deployed.
 
-| Role | Category | Primary Concerns |
-| --- | --- | --- |
-| Graduate student (primary user) | End user | Quickly locate previously-read papers; produce research progress reports; explore new directions. |
-| Independent researcher / self-learner | End user | Absorb knowledge across domains; lower reading friction; organize shareable outputs. |
-| Faculty advisor | Indirect user | Review the student's reading trajectory and research narrative (via exported slides). |
-| System administrator | Operations | API-key management, model cost control, backup of the local SQLite file. |
-| LLM / Embedding providers | External dependency | Supply generation and vectorization capability (OpenAI, Anthropic, local Ollama, etc.). |
-| arXiv / Semantic Scholar | External dependency | Provide paper metadata, PDFs, and citation graph data. |
+PaperHub is therefore a self-contained system: a chat surface, a router, four agents, an in-repo paper knowledge base with RAG, an in-repo slide pipeline, and a tool-call audit log. The four product dimensions PaperHub commits to are problem classification, tool selection, model answer-quality comparison, and traceability — see §I-5 (functional requirements) and §I-8 (acceptance criteria) for the concrete shape of each.
 
-## 4. Use Cases
+**Engineering principle.** Invest in UX; reuse code by *copying and adapting*, not by service integration. The chat shell, citation canvas, routing badge, trace panel, and LangGraph router are new code; the paper-extraction utilities are copied + edited from `paper2slides-plus`; the chat-shell layout idioms are copied + ported from `Intro2GenAI-hw1`. Every step of the pipeline is in-repo so every trace row points at code we control.
 
-### UC-1: Add a paper and build its index
+## I-2. 問題描述 (Problem Description)
 
-A master's student in NLP, Alex, sees a new paper about RAG evaluation on arXiv. He pastes the link into PaperHub. The system automatically downloads the PDF, extracts the title and abstract, generates semantic embeddings, identifies the reference list, and returns a graph showing how this new paper relates to existing ones in his library — revealing that the paper inherits methodology from five papers he has previously read. The entire flow completes within 30 seconds.
+Today's chat interfaces to LLMs hide three things this product makes first-class:
 
-### UC-2: Ask questions about paper details
+1. **Opaque tool / model selection.** A general-purpose chat can answer a paper question, run an SQL aggregation, or call an external tool — but the user cannot tell whether the agent picked the right capability or whether a wrong answer was caused by the model, the prompt, or a wrong tool firing.
+2. **Ungrounded citations.** When an LLM says *"according to §3.2"*, there is no path from the cited token back to the actual paragraph in the source paper. For research use this is fatal.
+3. **Non-reproducible agent runs.** Without a structured per-step audit trail (model, tool, arguments, latency, status), multi-agent answers cannot be debugged or compared across model choices.
 
-While preparing a lab meeting, Alex wants to confirm "did the paper I read last week use BLEU or ROUGE for evaluation?" He types in the PaperHub chat: *"What evaluation metric did Chen 2024 use in their RAG paper?"* The system retrieves relevant passages via RAG, asks an LLM to compose the answer, and annotates the response with *"Source: §4.2, p.7"*. If no matching content exists in the database, the system explicitly replies "No relevant information found in the indexed papers" rather than fabricating an answer.
+PaperHub addresses all three **at the UI surface**: a **routing badge** makes (1) visible per turn; a **citation canvas** with click-to-scroll-and-highlight makes (2) inspectable; a **trace panel** sourced from a `tool_calls` SQLite table makes (3) replayable. The backend doing the actual research work is reused from existing services — the contribution is the inspection layer on top.
 
-### UC-3: Research-direction suggestion and multi-paper slide generation
+## I-3. 利害關係人與使用者角色 (Stakeholders & User Roles)
 
-Alex needs to present his progress to his advisor next week. He opens the **Research Direction Exploration** mode in PaperHub and enters the keyword *"low-resource RAG evaluation."* Combining 12 related papers from his library, the system lists three sub-topics that remain under-explored and tags the key papers supporting each. Alex picks the three most promising and clicks **Compose Slides**. The system invokes the summarization, structure-planning, and Beamer-generation modules in sequence, and within 10 minutes produces a 15-page PDF deck containing background, a three-paper comparison table, identified research gaps, and a reference page.
+| Role | Concern |
+| --- | --- |
+| Primary end user — researcher / technical reviewer | Polished demo flow; visible routing decisions; inspectable citations; auditable traces. |
+| Presenter / operator | Reliable demo, reproducible from a single repo; cost-bounded LLM usage. |
+| Reference projects | `paper2slides-plus` (extraction + LaTeX utilities, decomposed and copied into this repo); MCP servers (`filesystem`, `sqlite`, custom `paperhub.*`). |
+| LLM providers (Gemini / Anthropic / Ollama) | API quotas; key redaction in audit log. |
 
-### UC-4: Natural-language statistics over the library (NL2SQL)
+## I-4. 使用情境 (Use Cases — 6)
 
-Alex wants a quick reading-habit summary for his monthly report. He types into the same chat box: *"How many papers did I add in the past six months, broken down by primary topic? Show only topics with at least three papers."* The Router Agent classifies the question as a **structured-statistics** task and dispatches it to the **SQL Agent** instead of the RAG pipeline. The SQL Agent translates the question into a parameterized SQLite query against the `papers` and `tags` tables, executes it in read-only mode, formats the result as a small table, and replies with both the answer and the exact SQL it ran (folded under a "Show SQL" toggle). If the LLM emits invalid SQL, the system catches the database error, surfaces it to the LLM as feedback, and retries up to three times before failing loudly rather than fabricating numbers.
+The reading flow is intentionally split into three explicit moments: **search**, **curate**, **discuss / generate**. The user always sees a stable shortlist of "reference sources" attached to the current chat session, and can toggle individual ones on / off — every downstream Q&A or slide generation honours that toggle.
 
-### UC-5: External MCP tool call with visible tool-routing trace
+### UC-1 — Search arXiv and shortlist candidates
+*"Find recent papers on Mixture-of-Experts routing."* → Router picks `paper_search` → Research Agent queries the arXiv API (via the copied-and-adapted Python helper from `paper2slides-plus`) → results render inline as a result list with abstract, authors, year, and an **Add as reference** button per row. **Nothing is downloaded yet** — search results are metadata only, presented for the user to skim.
 
-Alex pastes a colleague's pre-print URL into the chat and asks: *"Save this PDF to my `~/Papers/inbox` folder, then summarize section 3."* The Router Agent recognizes two sub-tasks: a **filesystem write** (handled by the MCP filesystem server) and a **paper summarization** (handled by the Research Agent). The UI's "Tool Trace" panel shows, step by step: `router → mcp.filesystem.write_file(path, bytes)` (✓ permission granted, scope = `~/Papers/inbox`), then `router → research_agent.summarize(section=3)`. Each step lists the tool name, the model used, the arguments (with secrets redacted), the latency, and the token cost. Alex can replay any single step in isolation for debugging, and the entire trace is persisted to the audit log table so the run is reproducible after the fact.
+### UC-2 — Promote a paper to a session reference (download-if-needed)
+The user clicks **Add as reference** on one or more search results → the Paper Pipeline (§III-5.1) runs. The pipeline's **first step is a cache lookup** on `content_key` (e.g. `arxiv:2403.01234`): if a matching `paper_content` row already exists (from a previous session), the pipeline **skips** download, extraction, HTML render, chunking, and embedding entirely, and just inserts a new `papers (session_id, paper_content_id, enabled=true, added_at)` row pointing at the existing content. On cache miss, the pipeline downloads, extracts, renders HTML, chunks, embeds, persists a `paper_content` row + `chunks` + Chroma vectors **once**, then inserts the `papers` row. Either way the paper appears in the **Reference Sources** sidebar panel under the current chat session, marked enabled by default. The user can toggle any reference on / off; toggling does *not* delete anything, it only flips `papers.enabled` for that row.
 
-## 5. Functional Requirements
+### UC-3 — Multi-paper Q&A with the Citation Canvas *(headline)*
+*"How do these two papers differ on expert collapse?"* → Router picks `paper_qa` → Research Agent reads the **currently-enabled references** for the session, runs in-repo RAG (Chroma vector search scoped to the enabled `paper_content_id`s → cross-encoder rerank → top-k chunks) → LLM generates an answer with inline `[chunk:<id>]` markers tied to real `chunks.id` rows → clicking one opens the **Citation Canvas** on the right, scrolls to the chunk, highlights it. Disabling a reference and re-running the same question must retrieve only from the remaining enabled set.
+
+### UC-4 — Slide generation from the enabled reference set
+*"Make slides comparing these references."* → Router picks `slides` → Report Agent reads the same enabled set → runs the in-repo Slide Pipeline (§III-5): structure planning over the chunk corpus → per-section LLM generation → emit modern-framework deck (Marp / Slidev / Beamer-via-LangGraph — choice deferred to implementation, see §III-5) → return artefact path as a downloadable chip in the chat. The pipeline reuses LaTeX helper functions copied from `paper2slides-plus` but is orchestrated by new code. Toggling a reference off before generation excludes it from the deck.
+
+### UC-5 — Library-stats NL2SQL
+*"How many papers did I add this week? Which sessions reference paper X?"* → Router picks `library_stats` → SQL Agent emits a `SELECT` via the `sqlite` MCP (table allowlist enforced; covers `paper_content`, `papers`, `chat_sessions`, `runs`, etc.) → answer + executed SQL shown. "Which sessions reference paper X" is answered by joining `papers` ⨝ `paper_content` on `paper_content_id` and filtering on `paper_content.arxiv_id` — `paper_content` is the unique paper identity, `papers` is the per-session membership row (§III-7).
+
+### UC-6 — Compare two models on the same question
+Presenter toggles **Compare** in the composer, picks two models (e.g. `gemini-2.5-flash` vs `gemini-2.5-pro`), sends the same prompt → two answers stream side-by-side, each with its own routing badge + trace panel. The same enabled-reference set scopes both runs.
+
+## I-5. 功能需求 (Functional Requirements — 9)
 
 | ID | Name | Description |
 | --- | --- | --- |
-| **FR-01** | Paper import and indexing | Supports three import methods: arXiv ID, DOI, and local PDF. The system automatically performs download, text extraction, section chunking, embedding, and metadata ingestion. |
-| **FR-02** | Cross-paper relation analysis | Computes a relation strength score along three dimensions — citation, semantic similarity, and author overlap — and renders the result as an interactive graph. |
-| **FR-03** | Paper-detail Q&A (RAG) | Accepts natural-language questions, retrieves relevant passages, and generates answers with cited sources. |
-| **FR-04** | Research-direction suggestion | Analyzes the topic distribution of the user's library, identifies research gaps, and outputs 3–5 candidate directions with supporting papers. |
-| **FR-05** | Multi-paper integrated slides | Given N selected papers (hard cap: **≤ 5 input papers, ≤ 20 generated pages per run** — enforced as a rule before any LLM call so cost is predictable), generates a Beamer slide deck covering background, paper comparison, research gaps, and conclusions, then compiles to PDF. |
-| **FR-06** | Tagging and project management | Users can create multiple research projects; each paper can be tagged, annotated, and assigned a reading status (unread / skimmed / deeply read). |
-| **FR-07** | Interactive slide editing | Inherits the page-level editing mechanism from paper2slides-plus, allowing the user to regenerate or fine-tune individual slides with on-the-fly recompilation. |
-| **FR-08** | Router Agent and task classification | A dedicated Router Agent classifies every incoming user task into one of a fixed set of intents (`paper_qa`, `library_stats`, `research_suggest`, `slides`, `mcp_tool`, `chitchat`), selects the matching sub-agent (Research / SQL / Report / Slide / MCP), and picks a model tier (small for routing/classification, flagship for generation). Classification confidence below a threshold falls back to asking the user to disambiguate. |
-| **FR-09** | NL2SQL over the local library | The SQL Agent translates natural-language statistical questions ("how many papers about X in the past 6 months", "top 5 most-cited authors in my library") into parameterized SQL against the SQLite metadata schema (and optionally DuckDB for ad-hoc analytics). Queries execute in a **read-only** connection. The emitted SQL, the row count, and the execution time are surfaced in the UI; invalid SQL triggers a self-repair loop (max 3 retries). |
-| **FR-10** | MCP tool integration | The system exposes MCP-compatible tools to the agents — at minimum: `filesystem` (sandboxed to a user-configured root), `sqlite` (read-only over the metadata DB), and `web_search`. Each tool ships with a structured description (purpose, arguments schema, scope/permission boundary). A custom MCP server demonstrating PaperHub-specific tools (e.g. `paperhub.find_related`) is also provided. |
-| **FR-11** | Tool-call audit log and trace UI | Every agent step persists `(run_id, step_index, agent, tool, model, args_redacted, result_summary, latency_ms, token_in, token_out, status, error)` to a `tool_calls` SQLite table. A "Tool Trace" panel in the UI renders the full DAG for any run, supports single-step replay, and exports the trace as JSON for grading / reproducibility. |
-| **FR-12** | Model and tool evaluation harness | A built-in evaluation harness runs a fixed task suite (paper_qa / library_stats / mcp_tool / mixed) across configurable model × tool-routing combinations, scoring all five dimensions below. Results are emitted as a regression-tracked comparison table; the harness runs in CI on every release using a recording LLM adapter (replayed fixtures, free, ~30 s) and can also be invoked manually with real APIs for the model-comparison report. **Scoring rubric:** (a) **Routing accuracy** — exact-match against gold intent labels on a ≥ 30-prompt held-out set spanning all 6 intents. (b) **Answer correctness** — LLM-as-judge using a fixed judge model (`claude-haiku-4-5` by default), a published rubric prompt scored 0–3 (3 = factually correct and complete; 2 = correct but partial; 1 = partially correct or misleading; 0 = wrong or hallucinated); the rubric must achieve Cohen's κ ≥ 0.7 against ≥ 20 human-scored items before it is accepted as the production judge, and the human-calibration set is checked in alongside the rubric prompt. (c) **Source-citation rate** — % of `paper_qa` answers that include at least one inline `(§section, p.page)` citation resolvable to an existing chunk row. (d) **SQL executability** — % of generated SQL that runs without error against the read-only connection on first attempt, and % that runs after the self-repair loop (≤ 3 retries); for the executable subset, % whose result rows match the gold result exactly. (e) **End-to-end latency and USD cost per task**, broken down by routing decision and model tier. |
+| **FR-01** | Routing badge | Every assistant message header shows a chip with `intent · model_tier · confidence%`. Click expands the Router's `reasoning` text. Sourced from `runs.routing_decision_json`. |
+| **FR-02** | Trace panel | Per-turn collapsible panel listing each `tool_calls` row: `[agent] tool · status · latency`. Click a row to expand `args_redacted` + `result_summary`. Rejections render yellow; errors red. |
+| **FR-03** | Citation Canvas | Inline citations rendered as clickable buttons. Click opens / focuses a right-pane canvas, loads the paper's pre-rendered HTML (`paper_content.html_path`, produced once at import time — §III-5.1), smooth-scrolls to the chunk's `char_start`, applies a transient highlight on `[char_start, char_end]`. Canvas closes / switches papers without page reload. |
+| **FR-04** | Compare-models view | Composer has a **Compare** toggle. When on, the same prompt fans out to two configured models; both responses stream into a split pane with their own routing badges + trace panels. Both branches share a single `run_id`; every `tool_calls` row written in either branch carries `branch='A'` or `branch='B'` so replay can reconstruct each side independently (see §III-7). |
+| **FR-05** | Chat shell parity with `Intro2GenAI-hw1` | History sidebar with search; new-chat; conversation fork from any past message; thinking-block auto-disclosure for `<think>` tags; SSE streaming with token-by-token rendering; dark / light theme. |
+| **FR-06** | LangGraph router (4 active intents) | Single LangGraph node classifies user input into `paper_search` / `paper_qa` / `slides` / `library_stats`, with `chitchat` as the fallback. Emits `routing_decision` SSE event before any sub-agent fires. Thin: one prompt + one structured-output call. |
+| **FR-07** | In-repo pipelines (paper + slide) | `paper_search` and `paper_qa` use the in-repo **Paper Pipeline** (§III-5): arXiv / PDF / LaTeX extraction (adapted from `paper2slides-plus` utilities), chunker, embedder, Chroma retrieval, cross-encoder rerank. `slides` uses the in-repo **Slide Pipeline** (§III-5): LangGraph-orchestrated structure planning + per-section generation on a modern framework (Marp / Slidev / Beamer-via-LangGraph). `library_stats` dispatches to the in-repo `sqlite` MCP. Nothing runs as an external `paper2slides-plus` service. |
+| **FR-08** | Session-scoped reference sources | Papers are **session-scoped at the membership/toggle layer** and **deduplicated at the content layer** (v2.2 two-layer design, §III-7). `papers (session_id, paper_content_id, enabled, added_at)` is the per-session membership row; `paper_content` owns the unique physical paper (one row per `content_key`, one on-disk dir under `workspace/papers_cache/...`, one set of `chunks` + Chroma vectors). The **Reference Sources** sidebar panel lists every `papers` row for the current session (joined to `paper_content` for title / year) with a toggle each. The `paper_qa` retrieval scope (FR-07) and the `slides` corpus (UC-4) **must** intersect Chroma queries with `{paper_content_id ∈ (SELECT paper_content_id FROM papers WHERE session_id = :s AND enabled = TRUE)}`. Toggling off flips `papers.enabled` only — it does not touch `paper_content`, the cache dir, or chunks. Adding a reference is the explicit follow-up to a `paper_search` result via an **Add as reference** button (UC-2); the Paper Pipeline performs a cache lookup on `content_key` (§III-5.1) — on hit it inserts a new `papers` row referencing the existing `paper_content_id` (no re-download, no re-extraction, no re-embedding); on miss it ingests the paper into the cache, inserts a `paper_content` row + `chunks`, then the `papers` row. The `UNIQUE (session_id, paper_content_id)` constraint prevents accidentally adding the same paper twice to the same session. |
+| **FR-09** | Audit-log writer | Every model call, MCP call, and pipeline step writes a `tool_calls` row before returning, tagged with the active `branch` (empty string outside Compare mode; `'A'` / `'B'` inside it — FR-04). Redactor masks API keys (`sk-ant-*`, `sk-proj-*`, `AIza*`) and `$HOME` paths. Survives client disconnect (run finalises on `CancelledError`). |
 
-## 6. Non-Functional Requirements
+## I-6. 非功能需求 (Non-Functional Requirements — 6)
 
-| ID | Category | Concrete Targets |
+| ID | Category | Target |
 | --- | --- | --- |
-| **NFR-01** | Performance | **Warm-cache budgets** (services up, model warm, network reachable, paper PDF already on disk *or* arXiv rate-limit window available): single-paper indexing ≤ 60 s end-to-end; RAG Q&A first-token latency ≤ 5 s; slide generation (≤ 5 papers, ≤ 20 pages) ≤ 15 minutes. **Cold-start budgets** (first run after boot, GROBID JVM warming, reranker model loading, network round-trip): single-paper indexing ≤ 3 minutes; first RAG Q&A first-token latency ≤ 15 s. The cold-start figures are documented separately so warm-cache acceptance tests are not flaky on a freshly-booted laptop. |
-| **NFR-02** | Reliability | LaTeX compilation failures trigger an automatic feedback loop (max 3 retries); external API calls use exponential-backoff retry. |
-| **NFR-03** | Extensibility | LLM providers must be pluggable (OpenAI, Anthropic, local Ollama); front-end and back-end are decoupled via REST so each can be replaced independently. |
-| **NFR-04** | Data security | API keys are injected via environment variables only; the SQLite database is stored on the user's local machine and can be backed up in one click; no mandatory cloud dependency. |
-| **NFR-05** | Usability | React UI in Open WebUI style (left: chat history sidebar; center: chat pane); bilingual zh-TW / en; no main feature is more than three clicks away. |
-| **NFR-06** | Maintainability | Modular architecture with clear function boundaries; prompts centrally managed in YAML and independently versioned. |
-| **NFR-07** | Cost control | Full pipeline cost per paper (index + slides) target ≤ USD 0.30; a usage dashboard is provided. |
-| **NFR-08** | Routing accuracy | On a held-out task-classification set of ≥ 30 labeled prompts spanning all intents, Router Agent top-1 accuracy ≥ 75% (stretch goal: 85%). Calls that would invoke a *destructive* tool (e.g. filesystem write) outside its declared scope must be rejected by the orchestrator — this is enforced by rules, not by routing accuracy. |
-| **NFR-09** | Auditability / reproducibility | Every chat turn produces a `run_id`; the full tool-call trace for any past `run_id` must be reconstructable from SQLite alone. Argument fields containing API keys or absolute home-directory paths are redacted before persistence. |
-| **NFR-10** | MCP security boundary | Each MCP tool declares an explicit allow-list (filesystem root, table allow-list, URL domain allow-list). Calls outside the declared scope are rejected by the orchestrator *before* reaching the MCP server. |
-| **NFR-11** | Strict typing | All Python interfaces — FastAPI request/response models, agent state, LangGraph node I/O, tool argument schemas, LLM structured outputs, and the `tool_calls` trace record — are declared with **Pydantic v2 `BaseModel`** (for validated runtime payloads) or **`TypedDict` / `dataclass`** (for in-process state). Use of `Any`, `object`, untyped `dict`, or bare `list` in public function signatures and module-level interfaces is **prohibited**; `dict[str, Any]` is allowed only at the I/O boundary with an external untyped source (e.g. a raw HTTP body) and must be parsed into a typed model before crossing one function call. The codebase passes `mypy --strict` (or `pyright` strict mode) in CI; new code that introduces `Any` is rejected. **Narrow upstream-boundary exception:** `# type: ignore[<specific-error-code>]` is permitted **only** when calling into LangGraph or the MCP SDK at a point where their published type stubs are themselves incomplete or incorrect; each occurrence must (a) cite the specific mypy error code in the comment, (b) be confined to a single statement (never a whole function or module), and (c) be tracked in a `KNOWN-TYPE-GAPS.md` register so they can be removed when upstream fixes ship. Bare `# type: ignore` with no error code is rejected by CI. |
+| **NFR-01** | UX latency | First token ≤ 5 s warm for `paper_qa` and `library_stats`; ≤ 2 s for `chitchat`. Citation Canvas scroll-and-highlight ≤ 200 ms after click. |
+| **NFR-02** | UX completeness | Loading, empty, error, and rejection states each have a visible UI representation. No silent failures; no "lost" assistant bubbles after a stream error. |
+| **NFR-03** | Reuse posture | The reference projects are **decomposed, not consumed.** Useful extraction / LaTeX helpers from `paper2slides-plus` are copied into the repo and adapted (with provenance comments); the chat-with-paper and slide orchestrators are intentionally rebuilt. UX idioms from `Intro2GenAI-hw1` are ported to React. New backend Python target ≤ ~3k LoC (Paper Pipeline ≈ 800, Slide Pipeline ≈ 600, agents + tracer + router ≈ 900, FastAPI surface ≈ 400). Provenance comments required on every copied file. |
+| **NFR-04** | Auditability | Every chat turn → unique `run_id`. Full `tool_calls` DAG replays from SQLite alone. API keys + home-dir paths redacted. |
+| **NFR-05** | MCP scope boundary | Every MCP tool declares a scope (filesystem root, table allowlist, URL domain allowlist). Out-of-scope arguments rejected at the orchestrator, logged as `tool_call.status='rejected'`, surfaced in the Trace panel. |
+| **NFR-06** | Strict typing on new code | New Python uses Pydantic v2 + `mypy --strict`. All cross-module signatures (router → agent, agent → pipeline, pipeline → tracer) typed via Pydantic v2 models. Frontend uses TypeScript strict mode. |
 
-## 7. Out of Scope
+## I-7. 系統邊界 (Out of Scope)
 
-To keep the system's positioning clear and engineering effort focused, the following are explicitly **excluded** from this release:
+- No relation graph, no research-direction suggestion, no project / tag / reading-status workflows.
+- No PDF.js viewer — the Citation Canvas renders the pre-rendered HTML produced at import time (§III-5.1, `paper_content.html_path`), not a PDF page. Full PDF rendering is post-demo.
+- No LLM-as-judge harness. Evaluation is hand-graded markdown.
+- No CI gate on the eval rubric.
+- No multi-user, no auth, no cloud deployment.
 
-- **No ghostwriting.** The system does not write paper sections on the user's behalf; it only summarizes, organizes, and inspires.
-- **No active crawling.** The system does not autonomously fetch new arXiv papers for recommendation; users must import manually.
-- **No experiment reproduction.** The system does not execute paper code or rerun experiments; all "data" comes from the paper text itself.
-- **No peer review.** The system does not score papers for quality or rank them by academic value, to avoid bias.
-- **No real-time multi-user collaborative editing.** Slide editing is single-user; Google-Docs-style live collaboration is not supported.
-- **No paywall bypass.** The system processes only PDFs the user lawfully possesses and open-access papers.
-- **No enterprise-grade database stack.** This release deliberately avoids PostgreSQL, MinIO, Redis, etc.; the data layer is a single SQLite file plus a vector store, to keep deployment frictionless.
+## I-8. 驗收標準 (Acceptance Criteria)
 
-## 8. Acceptance Criteria
+Tied 1:1 to the four product dimensions from §I-1 plus the Citation Canvas headline.
 
-The following criteria correspond to FR-01 through FR-12; all must pass for delivery:
-
-1. Given 10 arXiv IDs imported sequentially with services already warm, **median per-paper indexing wall-clock ≤ 60 s** (excluding arXiv ToS rate-limit pauses, which are charged separately and reported), with metadata and embeddings persisted in SQLite. The same 10-paper batch must also complete end-to-end in ≤ 5 minutes inclusive of all rate-limit pauses.
-2. Given a manually-seeded **intra-library citation ground-truth graph** over 50 papers (built by extracting reference lists with GROBID and confirming each edge whose target is also one of the 50 papers), the relation-analysis feature reports a relation edge for **≥ 80% of those ground-truth edges (recall)** with **≥ 70% precision on the union of all edges it reports**. The ground-truth file is checked in alongside the test so the measurement is reproducible.
-3. On a 30-question RAG Q&A test set whose answers are verifiable against the indexed papers, answer accuracy ≥ 85% (judge-scored ≥ 2/3 per FR-12's rubric), with page-level source citation in 100% of accepted answers. On a separate 20-question **out-of-database** test set (questions about papers deliberately not indexed), **≥ 95% refusal rate**, where every refusal explicitly emits the string *"No relevant information found in the indexed papers."*
-4. Run on three different topical subsets, the research-suggestion feature produces 3–5 directions each; ≥ 70% are rated "reasonable" by a domain expert.
-5. Given three input papers, the integrated-slide feature successfully compiles to PDF with at least four sections: cover, background, paper comparison, conclusions.
-6. The project-management UI handles ≥ 5 simultaneous projects; tag and note operations complete within 1 second.
-7. Per-slide recompilation finishes within 30 seconds and does not affect other slides.
-8. On the held-out routing test set (≥ 30 labeled prompts spanning all intents), Router Agent top-1 accuracy ≥ 75%; out-of-scope MCP calls (e.g. filesystem write outside the configured root) are rejected by the orchestrator in 100% of attempted cases.
-9. On a 10-question NL2SQL test set, ≥ 70% of generated queries are executable on first attempt and ≥ 85% after the self-repair loop; for the executable subset, numeric answers match the gold result row-for-row.
-10. All eight client-side MCP tools (`arxiv`, `semantic_scholar`, `crossref`, `web_search`, `grobid`, `latex`, `filesystem`, `sqlite`) are callable end-to-end; at least one explicitly out-of-scope call per tool is rejected by the orchestrator in tests. The `paperhub.*` server-side MCP surface (≥ 5 methods) is reachable from an external MCP client and round-trips through the same scope-checker + tracer.
-11. For every chat run, the Tool Trace UI renders the full step DAG and exports it as JSON; replaying any single read-only step (e.g. retrieval, SQL query) in isolation reproduces the same `result_summary`.
-12. The evaluation harness produces a side-by-side comparison table across at least two model tiers × two routing strategies, reporting routing accuracy, answer correctness, SQL executability, latency, and cost per task.
+1. **Routing.** On a 16-prompt fixture (4 per active intent), Router top-1 accuracy ≥ 80 %. Every out-of-scope MCP call attempted in the demo (e.g. `sqlite` write, `..` filesystem traversal) is rejected and renders yellow in the Trace panel.
+2. **Citation Canvas.** For ≥ 5 distinct inline citations in the demo deck, clicking opens the canvas, scrolls to the chunk, and highlights it within ≤ 200 ms on the demo laptop.
+3. **Multi-paper Q&A.** A comparative question over ≥ 2 indexed papers yields an answer citing chunks from ≥ 2 distinct `paper_content.id` (i.e. two genuinely different papers, not two `papers` rows that happen to reference the same content).
+4. **Trace.** Every chat turn produces a `run_id`; replay-from-SQLite reconstructs the full step list.
+5. **Model comparison.** The Compare view renders two model outputs side-by-side for the same prompt, each with its own routing badge + trace. A hand-graded markdown table (10 prompts × 2 models) lives in `eval/results/`.
+6. **No silent failure.** A scripted error case (e.g. the LLM provider returns 500, or the Chroma index is missing) shows a visible error in chat AND a red row in the Trace panel — verified once during demo dry-run.
 
 ---
 
-# Part 2 — Technology Selection Analysis
+# Part 2 — 技術選型分析 (Technology Selection Analysis)
 
-While LLMs are at the heart of this system, the implementation must clearly partition tasks into *"suitable for LLM,"* *"better solved by rules,"* and *"only solvable with RAG."* Blindly delegating every task to a single LLM leads to hallucination, runaway cost, and unpredictable behavior. This section addresses the three required questions.
+## II-1. 哪些地方「不能只用 LLM」？
 
-## 1. Where can we NOT rely on LLMs alone? Why?
+Three places where the LLM is the wrong tool and rules / deterministic code must own the contract:
 
-### (1) Paper metadata extraction and normalization
+1. **Citation chunk resolution.** When the user clicks an inline citation, the canvas must scroll to the exact `chunks.id` row in SQLite. The LLM cannot invent that ID — the retriever's output supplies it, then the React renderer rewrites the citation marker into a canvas action keyed on the real chunk ID. Asking the LLM to "remember which chunk it cited" would yield plausible-but-wrong IDs and the canvas would scroll to the wrong text.
+2. **Tool-call audit log.** Every entry in `tool_calls` (latency, token counts, status, args) is a measurement, not an opinion. The tracer is rule-based: stopwatch around the call, `try / except` around the return, regex over `args_redacted`. If the LLM judged whether a step "succeeded", the audit log would lose its evidentiary value the moment the LLM disagreed with reality.
+3. **MCP scope enforcement.** The rejection of a filesystem `..` traversal, a `DROP TABLE`, or a query against a non-allowlisted table is a hard security boundary. An LLM "scope checker" would have non-zero false-negative rate; rules (regex / `Path.resolve()` / `sqlglot.parse_one`) guarantee 100 % rejection on declared scope.
 
-Paper titles, authors, DOI, arXiv ID, and publication year are **structured information**. Asking an LLM to extract authors directly from raw PDF text introduces several failures:
+## II-2. 哪些地方應該用「規則」反而比較好？
 
-- **Non-determinism.** The same PDF may yield different author orderings across temperature settings or model versions.
-- **Cost waste.** Calling the LLM on every paper for a strongly rule-based ETL task amounts to paying tokens for something a regex handles for free.
-- **Lack of verifiability.** An LLM cannot guarantee a valid DOI shape (`10.xxxx/yyyy`); a regex can.
-
-**Correct approach:** use GROBID, the Crossref API, and the arXiv API to obtain structured metadata directly; fall back to LLM only when those tools fail.
-
-### (2) Citation network and relation computation
-
-"Does paper A cite paper B?" is a discrete, exactly-determinable fact. It should be resolved by querying the Semantic Scholar Citation API or by parsing the PDF reference list — not by asking an LLM to "judge." Likewise, LLMs cannot replace graph algorithms (PageRank, community detection) for citation-network analysis.
-
-### (3) Numerical and statistical operations
-
-The Research-Direction Suggestion feature requires statistics such as *"what fraction of papers I added in the past six months use BERT-family models?"* LLMs are notoriously unreliable at precise counting. These queries should be handled by SQL (in our case, SQLite) or vector-store metadata filters. The LLM should only translate the user's natural language into a query, while the database guarantees correctness.
-
-### (4) LaTeX compilation and syntax validation
-
-After Beamer slides are generated, they must be compiled with `pdflatex`. Compiler error messages are deterministic and machine-parseable — they should be the ground truth, with `chktex` as a linter feeding errors back to the LLM for repair. This is exactly the feedback loop in paper2slides-plus. If we instead let the LLM "self-reflect" on whether its LaTeX is correct, there will be blind spots where the model believes the code is fine but `pdflatex` still fails.
-
-## 2. Where should we use RULES instead?
-
-| Scenario | Rule-based approach | Why it beats an LLM |
+| Task | Rule | Why it beats an LLM |
 | --- | --- | --- |
-| **arXiv ID format validation** | Regex `^\d{4}\.\d{4,5}$` | 100% accurate, zero cost, millisecond latency. |
-| **PDF text extraction** | PyMuPDF + pdffigures2 | OCR and layout analysis are mature fields; LLMs are weak at handling binary content. |
-| **Section structure splitting** | Split by LaTeX `\section` markers or PDF heading style | Structure is an inherent property of the document; no inference needed. |
-| **Paper deduplication** | DOI / arXiv ID as primary key, SHA-256 as fallback | Exact match is 1000× cheaper than semantic comparison by LLM. |
-| **Authorization checks** | SQLite `WHERE user_id = ?` filter | Security must be deterministic; a probabilistic model has no place here. |
-| **Slide page-count and cost guardrails** | Fixed limits: ≤ 5 papers, ≤ 20 pages per run | Rules make cost predictable; prevent a single request from burning hundreds of dollars. |
-| **LaTeX syntax checking** | chktex + pdflatex | The compiler is ground truth; LLM self-reflection misses errors. |
+| arXiv ID validation | regex `^\d{4}\.\d{4,5}(v\d+)?$` | 100 % accurate, microseconds, zero cost. |
+| SQL safety check (NL2SQL output) | `sqlglot.parse_one(sql)` + verb allowlist `{SELECT, WITH}` + table-name allowlist | Deterministic AST inspection — LLM "is this safe?" has non-zero failure rate. |
+| Filesystem `..` rejection | `Path.resolve().is_relative_to(workspace_root)` | One canonical answer per path; no probabilistic judgement. |
+| API-key redaction in `tool_calls` | regex over `sk-(ant\|proj)-…` and `AIza…` | LLM redactor would miss novel key shapes and is expensive. |
+| Routing confidence threshold | numeric `confidence < 0.6 → fallback_to_user=true` | Repeatable, not stochastic. Easy to A/B. |
+| Citation chunk lookup | `SELECT … FROM chunks WHERE id = ?` | One canonical answer per ID. |
+| Intro2GenAI-hw1 `<think>` block disclosure | DOM regex over `<think>…</think>` | Already works in the reference repo; no model needed. |
 
-**Principle:** any task with a single correct answer that can be deterministically judged and must be auditable should be handled by rules. LLMs are reserved for tasks requiring semantic understanding, where multiple acceptable outputs exist and creativity matters more than exactness — e.g. drafting summaries, organizing slide structure, suggesting research directions.
+**Principle.** Any task with a single deterministically-judgeable correct answer that must be auditable is owned by rules. LLMs are reserved for the semantic / generative work — drafting summaries, routing classification, NL2SQL translation — where multiple acceptable outputs exist and creativity matters more than exactness.
 
-## 3. What goes wrong if we don't use RAG?
+## II-3. 如果不用 RAG，會發生什麼問題？
 
-In PaperHub, paper-detail Q&A and multi-paper integration are both heavily RAG-dependent. If we removed RAG — either stuffing entire papers into the LLM context or relying on the model's parametric knowledge — the following five-layer breakdown occurs.
+Five concrete failure modes — each one tied to a specific FR that would break:
 
-### (1) Severe hallucination
+1. **Hallucination on the user's library (breaks FR-02 / UC-2).** The user's freshly-indexed papers are not in any LLM's training data. Without RAG, "compare these two papers on expert collapse" returns a plausible-sounding answer composed from the field's *average* paper — and cites section numbers that don't exist.
+2. **Citation Canvas dies (breaks FR-03).** The headline UX feature exists only because the retriever attaches a real `chunks.id` to every passage. Without RAG there are no chunk IDs to scroll to; clicking a citation does nothing.
+3. **Context-window blowup on multi-paper Q&A (breaks NFR-01 / NFR-05).** Two full 30-page papers ≈ 50 000 input tokens. Stuffing them into every Q&A prompt blows past Gemini Flash's effective practical input ceiling, costs USD ¢×N per turn, and pushes first-token latency well past the 5 s budget.
+4. **Knowledge cutoff (breaks UC-1).** A paper published last month doesn't exist in any model's parametric memory. Without RAG over the user's freshly-indexed library, the system cannot answer about anything new.
+5. **Personalisation lost (breaks the value proposition).** PaperHub's edge over generic ChatGPT is "the papers *I* have read". Without RAG, the system has nothing personal to retrieve from — it degrades to a generic chat wrapper, and the citation-rate acceptance criterion (I-8 #3) cannot be met.
 
-General-purpose LLMs are pre-trained on many public papers but know nothing about *"what §4.2 of a specific paper in the user's library says."* Without RAG to supply concrete context, the model will stitch together a plausible but wrong answer based on the field's "average paper" — a fatal flaw in academic settings, where citing a fabricated number directly damages credibility.
-
-### (2) Inability to handle new papers
-
-LLMs have knowledge cutoffs. A paper published in 2026 cannot be in the training data. Without RAG, users cannot ask about any paper that is newer than the model — impossible in fast-moving fields like AI research itself.
-
-### (3) Context-window and cost blow-up
-
-The naive alternative — stuff the entire paper into the prompt — fails on scale. A 30-page paper is ~25,000 tokens; integrating five papers means ~125,000 tokens per call. At mainstream input prices of USD 3–15 per million tokens, each Q&A burns tens of cents. RAG narrows the retrieved context to 1,000–3,000 tokens, cutting cost 30–100× and dramatically speeding up responses.
-
-### (4) No source attribution
-
-If the LLM simply says *"this paper uses BLEU,"* the user has no way to verify. RAG forces the system to first retrieve concrete passages and then generate an answer grounded in those passages, so it can append a citation like *"Source: §4.2, p.7."* For academic use this is not a nice-to-have — it is a baseline requirement.
-
-### (5) Loss of personalization
-
-The core value of PaperHub is "the papers *I* have read." Without RAG, the system cannot turn the user's reading history into a queryable knowledge source; the Research-Direction Suggestion feature would degenerate into a generic LLM's lecture about popular topics, completely disconnected from the user's real research trajectory.
-
-**Summary.** RAG is not an optional optimization — it is a core architectural decision. Without it, PaperHub would devolve from a personal research assistant into yet another generic ChatGPT wrapper.
+**Summary.** RAG is not an optional optimisation — it is the architectural decision that lets the Citation Canvas, the source-cited answer, and the personalised library experience all work. The actual RAG pipeline (chunking, embedding, retrieval) is the **in-repo Paper Pipeline** (§III-5.1); the Research Agent threads the retrieved chunk IDs through to the UI as `[chunk:<id>]` markers so the Citation Canvas can resolve every click against a real `chunks` row.
 
 ---
 
-# Part 3 — System Architecture Design
+# Part 3 — 系統架構設計 (System Architecture Design)
 
-The system adopts a seven-layer modular architecture, each layer with a single responsibility. This release targets a personal, single-machine deployment, so the data layer is deliberately reduced to two components — **SQLite + vector store** — avoiding enterprise-grade dependencies (PostgreSQL, MinIO, Redis) to keep deployment and maintenance overhead minimal.
+## III-1. Overview
 
-The orchestrator layer is organized as a **Router Agent + specialized sub-agents** pattern (Research / SQL / Report / Slide), implemented on top of LangGraph (with Google ADK considered as an alternative). The Router Agent owns task classification and tool selection; each sub-agent owns a narrow capability and a fixed tool palette. All tool calls — internal pipelines, NL2SQL queries, and external MCP tools — flow through a single instrumentation point that records a structured trace to the `tool_calls` SQLite table, making every run reproducible and auditable.
-
-## 1. Architecture Overview
-
-```mermaid
-flowchart TB
-    subgraph UI["① UI Layer — Custom React, Open WebUI style"]
-        U1["Sidebar<br/>Chat history + Projects"]
-        U2["Chat Pane<br/>QA + Citations"]
-        U3["Paper Panel<br/>List + Relation Graph"]
-        U4["Slide Editor<br/>Page-level Edit"]
-    end
-
-    subgraph ORC["② Orchestrator / Workflow — FastAPI + LangGraph"]
-        O0["Router Agent<br/>(task classification +<br/>tool selection)"]
-        O1["Research Agent<br/>(RAG QA, research<br/>direction suggest)"]
-        O2["SQL Agent<br/>(NL2SQL over<br/>SQLite / DuckDB)"]
-        O3["Report Agent<br/>(slides, exports)"]
-        O4["Indexing Pipeline"]
-        O5["Tool-Call Tracer<br/>(audit log)"]
-    end
-
-    subgraph MCP["⑧ MCP Tool Layer (client-side + paperhub.* server)"]
-        M1["filesystem (scoped)"]
-        M2["sqlite (read-only)"]
-        M3["web_search"]
-        M4["arxiv"]
-        M5["semantic_scholar"]
-        M6["crossref"]
-        M7["grobid"]
-        M8["latex (pdflatex+chktex)"]
-        M9["custom: paperhub.*<br/>server"]
-    end
-
-    subgraph LLM["③ LLM Module"]
-        L1["Provider Adapter"]
-        L2["OpenAI / Claude / Ollama"]
-        L3["Prompt YAML"]
-    end
-
-    subgraph RAG["④ RAG / Knowledge Base"]
-        R1["Text Chunker"]
-        R2["Embedding Model"]
-        R3["Vector Search + Reranker"]
-    end
-
-    subgraph DB["⑥ Data Layer — SQLite (+ optional DuckDB) + Vector Store"]
-        D1[("SQLite<br/>metadata, projects, notes,<br/>chat history, tool_calls log")]
-        D2[("sqlite-vss / Chroma<br/>paper chunk vectors")]
-        D3[("Local FS<br/>PDF / .tex / .pdf")]
-        D4[("DuckDB (optional)<br/>ad-hoc analytics<br/>for SQL Agent")]
-    end
-
-    UI -- "REST / WebSocket" --> ORC
-    ORC --> LLM
-    ORC --> RAG
-    ORC --> MCP
-    ORC --> DB
-    O5 -. "writes trace" .-> D1
-    O2 --> D1
-    O2 --> D4
-    RAG --> D2
-    LLM --> L1
-    L1 --> L2
-    L1 --> L3
-
-    classDef ui   fill:#E7F0F9,stroke:#2E75B6,color:#1F3864;
-    classDef orc  fill:#FFF2CC,stroke:#BF8F00,color:#5C4400;
-    classDef llm  fill:#E2EFDA,stroke:#548235,color:#1F3F1F;
-    classDef rag  fill:#FCE4D6,stroke:#C65911,color:#5B2C0E;
-    classDef db   fill:#F4CCCC,stroke:#A61C00,color:#5B0F00;
-    classDef mcp  fill:#EFE3FA,stroke:#7030A0,color:#3B1B5B;
-
-    class UI,U1,U2,U3,U4 ui
-    class ORC,O0,O1,O2,O3,O4,O5 orc
-    class LLM,L1,L2,L3 llm
-    class RAG,R1,R2,R3 rag
-    class DB,D1,D2,D3,D4 db
-    class MCP,M1,M2,M3,M4,M5,M6,M7,M8,M9 mcp
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│  ① UI Layer — React + Vite + Tailwind                                  │
+│   ├─ Sidebar       — history, current papers, search, fork             │
+│   ├─ Chat pane     — streaming, RoutingBadge, TraceInline, Compare     │
+│   └─ Citation Canvas — paper viewer w/ chunk highlight (right pane)    │
+└─────────────────────────────┬──────────────────────────────────────────┘
+                              │ REST + SSE
+┌─────────────────────────────▼──────────────────────────────────────────┐
+│  ② Orchestrator / Workflow — FastAPI + LangGraph (new, ~3k LoC)        │
+│   ├─ Router Agent   — 4-intent classifier (structured output)          │
+│   ├─ Research Agent — paper_qa node; in-repo RAG over Chroma chunks    │
+│   ├─ SQL Agent      — library_stats node; NL2SQL via sqlite MCP        │
+│   ├─ Report Agent   — slides node; in-repo Slide Pipeline              │
+│   └─ Tracer         — writes every step to tool_calls                  │
+└────┬─────────────────┬──────────────────┬─────────────────┬────────────┘
+     │                 │                  │                 │
+┌────▼─────────┐ ┌─────▼──────────────┐ ┌────▼──────────────┐ ┌────▼─────────┐
+│ ③ LLM Module │ │ ④ RAG / KB         │ │ ⑤ External Systems│ │ ⑥ Database   │
+│  LiteLLM     │ │ Paper Pipeline →   │ │  MCP servers:     │ │ SQLite       │
+│  adapter     │ │ Chroma index +     │ │   filesystem      │ │ 7 tables     │
+│  Gemini /    │ │ cross-encoder      │ │   sqlite (own)    │ │ Chroma       │
+│  Anthropic / │ │ rerank             │ │   paperhub.* (own)│ │ chunk vectors│
+│  Ollama      │ │ Slide Pipeline →   │ │                   │ │ Local FS     │
+│              │ │ Marp / Slidev /    │ │  arXiv:           │ │ (PDFs, .tex, │
+│              │ │ Beamer-via-LangGr  │ │   copied utility, │ │  e-prints)   │
+│              │ │ (uses adapted p2s  │ │   not an MCP      │ │              │
+│              │ │  extract utils)    │ │                   │ │              │
+└──────────────┘ └────────────────────┘ └───────────────────┘ └──────────────┘
 ```
 
-*Figure 1. PaperHub system overview (v1.3). Six top-level blocks: ① UI, ② Orchestrator (Router + sub-agents + tracer), ③ LLM Module (only kept-separate external integration), ④ RAG / Knowledge Base, ⑥ Data Layer, ⑧ MCP Tool Layer (every other external or deterministic integration). The previous §⑤ External APIs and §⑦ Rules/Tools blocks are folded into §⑧.*
+## III-2. ① UI Layer — Custom React, Open WebUI style
 
-## 2. Layer-by-layer Responsibilities
+React + Vite + Tailwind + Zustand store. Layout mirrors `Intro2GenAI-hw1` (collapsible sidebar; centre chat pane; bottom composer) with two structural additions: a **Reference Sources** panel under the sidebar, and a right-side drawer for the **Citation Canvas**.
 
-### ① UI Layer — Custom React, Open WebUI style
+Components and where each comes from:
 
-A custom React chat interface modeled after Open WebUI's layout: a left sidebar holding chat history and project switching, a central chat pane for Q&A, plus dedicated panels for the paper list and the relation graph. We chose to build a custom UI rather than reuse Open WebUI directly because PaperHub's core needs — the paper relation graph, the slide page-level editor, and clickable inline citations that jump to PDF pages — fall outside Open WebUI's standard feature set. Building it ourselves preserves maximum flexibility. The planned stack is **React + Vite + Tailwind CSS**, communicating with the backend via REST / WebSocket.
+| Component | Provenance |
+| --- | --- |
+| `Sidebar` | Port from `Intro2GenAI-hw1` (history list, search, fork affordance) |
+| `ReferenceSourcesPanel` | **New** — under the sidebar; lists every `papers` row scoped to the active `session_id` (joined to `paper_content` for `title` / `year` / `arxiv_id`), each with the `enabled` **toggle**, "Open in Canvas", and "Remove from session" affordances. Scopes every downstream `paper_qa` and `slides` invocation. |
+| `Composer` | Port from `Intro2GenAI-hw1` + new **Compare** toggle. (Adding a paper is done via UC-2 from a `paper_search` result, not a separate composer button.) |
+| `MessageBubble` | Port from `Intro2GenAI-hw1` (streaming markdown, `<think>` disclosure) |
+| `RoutingBadge` | **New** — chip on assistant header |
+| `TraceInline` | **New** — collapsible `tool_calls` list with status colouring |
+| `CitationCanvas` | **New (headline)** — right-pane drawer, smooth-scroll + highlight |
+| `CompareSplit` | **New** — two-pane variant of chat layout |
+| `SearchResultList` | **New** — rendered inline after a `paper_search` turn; each row carries metadata + an **Add as reference** button (UC-2 entry point) |
+| `EmptyState` / `LoadingDots` / `ErrorToast` / `RejectionPill` | All four states must be present per NFR-02 |
 
-- **Sidebar.** Chat history, project switcher, paper-list entry; follows Open WebUI's collapsible style.
-- **Chat pane.** Natural-language Q&A, streaming responses, clickable inline citations that jump to the PDF.
-- **Paper panel.** Cytoscape.js-rendered relation graph; clicking a node reveals abstract and notes.
-- **Slide editor.** Inherits paper2slides-plus's page-level editing flow, supporting Beamer regeneration with live preview.
+## III-3. ② Orchestrator / Workflow — FastAPI + LangGraph
 
-### ② Orchestrator / Workflow — Router Agent + sub-agents
+A single `POST /chat` SSE endpoint. Builds a LangGraph state machine per request, routes via the **Router Agent**, dispatches to one of three sub-agents — **Research Agent / SQL Agent / Report Agent** — or the `chitchat` fallback; emits SSE events `routing_decision`, `tool_step`, `token`, `citation`, `final`, `error`.
 
-The system's brain. **FastAPI** exposes the external interface, and **LangGraph** manages multi-step workflows internally (Google ADK is a drop-in alternative considered). The orchestrator is decomposed into one Router Agent and several narrowly-scoped sub-agents, so the routing decision is always explicit and auditable rather than buried inside a monolithic prompt.
+The four agents are first-class LangGraph nodes — discrete components with their own state, prompts, and tool palette:
 
-- **Router Agent.** Classifies each incoming task into one of a fixed intent set (`paper_qa`, `library_stats`, `research_suggest`, `slides`, `mcp_tool`, `chitchat`), picks the matching sub-agent and a model tier (small for routing/classification, flagship for generation), and emits a structured `routing_decision` event into the trace log. Low-confidence classifications fall back to asking the user to disambiguate.
-- **Research Agent.** Owns the RAG Q&A pipeline (retrieval → rerank → grounded generation → source annotation) and the research-direction-suggestion pipeline (topic clustering → gap analysis → recommendation).
-- **SQL Agent.** Owns the NL2SQL pipeline. Holds the schema of the SQLite metadata DB (and optionally a DuckDB analytics view), translates natural-language statistical questions into parameterized SQL, runs them on a **read-only** connection, and self-repairs on syntax / runtime errors (≤ 3 retries).
-- **Report Agent.** Owns the slide pipeline: structure planning → per-page generation → LaTeX compile → failure feedback loop (≤ 3 retries) → emit PDF. Also handles other export formats (Markdown, JSON trace export).
-- **Indexing pipeline.** Validate ID → download PDF → extract text → chunk → embed → ingest → compute relations. Triggered by the Research Agent or directly by the user (not via the Router).
-- **Tool-Call Tracer.** A cross-cutting instrumentation point sitting in front of every model call, tool call, and MCP call. Persists `(run_id, step_index, agent, tool, model, args_redacted, result_summary, latency_ms, token_in, token_out, status, error)` to the `tool_calls` SQLite table — this is the single source of truth for the Tool Trace UI and the evaluation harness.
-
-### ③ LLM Module
-
-Encapsulates all interaction with large language models. A **Provider Adapter** pattern lets upper layers call a uniform `generate(prompt, model_tier)`; the adapter routes to OpenAI, Anthropic Claude, or local Ollama as needed. Prompts are centrally stored in `prompts/config.yaml` (inherited from paper2slides-plus) and can be versioned and A/B-tested independently.
-
-- **Tiered models.** Lightweight tasks (intent classification, metadata fix-up) use small models; generative tasks (slides, research suggestions) use flagship models.
-- **Cost guardrails.** Every call estimates token usage in advance and rejects the request if the quota would be exceeded, surfacing the issue to the UI.
-
-### ④ RAG / Knowledge Base
-
-The system's memory core. Each imported paper is split into 500–1000-token chunks, vectorized by an embedding model, and stored in the vector store. Retrieval is two-stage to balance speed and precision:
-
-1. **Stage 1.** Dense-vector search returns the top-`min(50, ⌈corpus_size / 3⌉)` candidate chunks in milliseconds. The corpus-relative cap keeps the funnel meaningful on small libraries (e.g. on a 150-chunk corpus the dense stage retrieves 50 — already 1/3 of the corpus; capping to ⌈150/3⌉ = 50 happens to be the same, but on a 60-chunk corpus it caps to 20 so the reranker still has signal to discriminate on rather than re-scoring the entire corpus).
-2. **Stage 2.** A cross-encoder reranker reorders the Stage-1 set and selects the top-5 to feed into the LLM.
-
-The vector store's metadata filter supports filtering by project and paper ID so the user can scope a query to a single project (e.g. "only my Thesis project") without contaminating it with chunks from another. PaperHub is a single-user local-deployment product (see Out of Scope §7), so there is no cross-user isolation requirement; multi-tenant deployment is a deliberate non-goal.
-
-### ⑤ External APIs *(LLM providers only — bibliographic APIs moved to §⑧)*
-
-As of v1.3, the only external integrations that remain in this layer are **LLM provider APIs** (OpenAI, Anthropic, and local Ollama via the OpenAI-compatible interface). They have a hot-path streaming + structured-output interface that doesn't map cleanly onto MCP, so they keep their own `llm/adapter.py` module.
-
-All other external integrations — `arxiv`, `semantic_scholar`, `crossref`, `web_search` — are now exposed as MCP tools so they share the same scope-checker, audit log, and external-client surface as the rest of the tool palette. See §⑧.
-
-### ⑥ Data Layer — Two-component minimalist design
-
-The data layer is deliberately minimal: all structured data (projects, paper metadata, tags, notes, chat history) live in a **single SQLite file**, while paper-chunk embeddings live in a **vector store**. PaperHub ships with **Chroma as the default backend on all platforms** (clean Windows wheels, no native build step) with **`sqlite-vec`** (the modern successor to `sqlite-vss`, with reliable Windows binaries) as an opt-in alternative for users who want everything in one `.db` file; both back the same Pydantic-typed driver interface, so the choice is one config flag. Large binary files (PDF originals, generated `.tex` and `.pdf`) sit on the local filesystem; SQLite stores only their relative paths. Three benefits:
-
-- **Zero deployment cost.** No database server to spin up; the entire system runs on a single machine and backup is just copying one `.db` file.
-- **Sufficient for personal scale.** A single SQLite file easily handles a million rows — well beyond a single researcher's annual reading volume.
-- **Vector store is independently upgradeable.** If the library grows past tens of thousands of papers, swap the default Chroma backend for Qdrant or a hosted vector DB without touching the main schema.
-
-| Component | Purpose | Example Contents |
+| Agent | Role | Dependencies |
 | --- | --- | --- |
-| SQLite | Structured metadata | Projects, paper metadata, tags, notes, chat history, citation edges, `runs` and `tool_calls` audit log. |
-| Vector store (Chroma default / `sqlite-vec` alternative) | Vector index | Paper-chunk embeddings; metadata filters (`project_id`, `paper_id`, `page`, `section`). |
-| Local filesystem | Binary storage | Original PDFs, extracted figures, generated `.tex` / `.pdf` decks. |
-| DuckDB (optional, opt-in) | Ad-hoc analytics for the SQL Agent | Read-only access to the SQLite file via `INSTALL sqlite; LOAD sqlite; ATTACH 'paperhub.db' AS pdb (TYPE SQLITE, READ_ONLY);` — opened **per analytical query** as a fresh DuckDB connection so the attached SQLite state is re-read each time. This is **not a unified view** over a single live connection; it is a query-time bridge. Consistency is *read-at-attach-time* (i.e. a `library_stats` query reflects everything committed to SQLite before the `ATTACH` ran). Used only for OLAP-shaped questions the SQL Agent emits; transactional reads continue to hit SQLite directly. |
+| **Router Agent** | Classifies intent → `paper_qa` / `library_stats` / `slides` / `paper_search` (fallback `chitchat`); picks model tier; emits the `routing_decision` event | LLM (small tier) |
+| **Research Agent** | Handles `paper_search` (arXiv-API query via the adapted Python helper; returns a metadata-only result list rendered as `SearchResultList`) and `paper_qa` (in-repo RAG over the session's enabled reference sources). Surfaces retrieved chunk IDs so the Citation Canvas can resolve them. | Paper Pipeline (§III-5), Chroma, LLM (flagship) |
+| **SQL Agent** | Handles `library_stats`. Emits NL2SQL via a small LLM call, validates with `sqlglot` (SELECT-only, table-allowlisted), runs via the `sqlite` MCP, self-repairs once on failure. | `sqlite` MCP, LLM (small + flagship) |
+| **Report Agent** | Handles `slides`. Reads the session's enabled reference sources, runs the in-repo Slide Pipeline (§III-5.3) — structure planning → per-section generation → emit modern-framework deck (Marp / Slidev / Beamer-via-LangGraph; final framework deferred). Reuses LaTeX helpers copied from `paper2slides-plus` only if the chosen target is Beamer-via-LangGraph. | Slide Pipeline (§III-5.3), Chroma, LLM (flagship) |
 
-### ⑦ Rules / Tools Module *(folded into §⑧ as MCP tools)*
+`AgentState` is a `TypedDict` carrying `run_id`, `branch` (`''` outside Compare mode; `'A'` / `'B'` inside it — FR-04), `session_id`, `user_message`, `routing_decision`, `enabled_paper_content_ids` (resolved at the start of the turn from `SELECT paper_content_id FROM papers WHERE session_id = :s AND enabled = TRUE` — the membership → content lookup of FR-08), `retrieved_chunks`, `sql_result`, `report_artifact_path`, `final_response`. Each agent is one graph node; the Router's output is a conditional edge. The **Tool-Call Tracer** is wrapped around every model call, MCP call, and pipeline step and writes a `tool_calls` row before returning.
 
-As of v1.3, the deterministic tools previously listed here — `grobid` (structured PDF metadata + reference extraction), `pdflatex` + `chktex` (LaTeX compile + lint) — are exposed as MCP tools (`grobid`, `latex`). The rationale is the same as for the bibliographic APIs: uniform tracing, uniform scope-checking, and the ability for external MCP clients to reuse them. They remain deterministic in behavior; only the calling convention changed. See §⑧.
+**Framework choice rationale.** Two candidate frameworks were evaluated: **LangGraph** and **Google ADK**. LangGraph was picked because: (a) its node-graph metaphor makes the tool-selection logic visually unambiguous; (b) richer MCP-adjacent Python ecosystem; (c) LangGraph state diffs are diff-friendly in the audit log. Google ADK remains a drop-in alternative — the adapter boundary is the `LlmAdapter` Protocol, swap-out is one module.
 
-### ⑧ MCP Tool Layer
+## III-4. ③ LLM Module
 
-The unified tool surface for every non-LLM external integration. Every tool ships with a structured description — purpose, JSON argument schema, and an **explicit scope/permission boundary** — and the orchestrator rejects any call whose arguments fall outside the declared scope *before* the request reaches the MCP server. The same Tool-Call Tracer that records internal steps also records every MCP invocation.
+LiteLLM-based provider adapter — uniform `generate(prompt, model_tier, response_model, slot)` interface; routes to Gemini, Anthropic, OpenAI, or local Ollama based on env config. Prompts live in a YAML registry with versioned slots (`router/v1`, `research_qa/v1`, `sql_planner/v1`, `sql_repair/v1`). Per-call cost is estimated via `litellm.completion_cost` and surfaced in the trace.
 
-**Client-side MCP tools** (called by PaperHub agents; replace the v1.2 §⑤ External APIs and §⑦ Rules / Tools). The **Provenance** column is the v1.5 bill of materials: *Reuse* = run an existing community server unchanged, *Wrap* = ship a thin custom MCP server (~30–60 LoC) around an existing client library to add PaperHub-specific scope enforcement, *Build* = no acceptable server or client wrapper exists. Versions / package names are pinned at the design level.
+Two model tiers:
+- **small** — Router intent classification, NL2SQL planner. Latency-sensitive.
+- **flagship** — Research Agent answer generation, SQL repair, model-comparison sweep.
 
-| MCP Tool | Scope / Allow-list | Typical Use | Provenance |
-| --- | --- | --- | --- |
-| `arxiv` | Domain pinned to `arxiv.org`; per-arXiv-ToS rate limit | Resolve arXiv IDs to metadata; download PDF and LaTeX source. | **Reuse** — `blazickjp/arxiv-mcp-server` (PyPI, `uv tool install arxiv-mcp-server`). Already enforces the 3 s rate limit; superset of methods we need. |
-| `semantic_scholar` | Domain pinned to `api.semanticscholar.org`; per-API-key rate limit | Citation graph, related works, author lookup; primary source for the relation-graph and research-direction features. | **Reuse** — `zongmin-yu/semantic-scholar-fastmcp` (PyPI: `semantic-scholar-fastmcp`). 16 tools covering paper / citations / references / recommendations / author. |
-| `crossref` | Domain pinned to `api.crossref.org` | Reverse-lookup metadata by DOI when arXiv has no record. | **Wrap** — no maintained MCP server exists; wrap `crossref-commons` (Python) in a thin FastMCP server (~30 LoC). |
-| `web_search` | Domain allow-list (`arxiv.org`, `semanticscholar.org`, `doi.org`, `openreview.net`); rate-limited | Fallback general lookup when none of the structured APIs resolve. | **Wrap** — wrap Brave Search SDK (or Tavily) in a thin FastMCP server (~30 LoC) that enforces the 4-domain allow-list and rate limit. Reference: `brave/brave-search-mcp-server`. |
-| `grobid` | Localhost only (`http://localhost:8070`); request-size capped | Structured header + reference extraction from PDF. | **Wrap** — wrap `kermitt2/grobid-client-python` in a thin FastMCP server (~40 LoC) that validates PDF paths against the workspace root. Reference: `JackKuo666/grobid-MCP-Server`. |
-| `latex` | Sandboxed to workspace root; per-call timeout | `pdflatex` compile + `chktex` lint; backs the Beamer feedback loop. | **Build** — no existing server exposes both `chktex` and a workspace sandbox. ~150 LoC FastMCP server invoking `pdflatex` + `chktex` as subprocesses. |
-| `filesystem` | A single user-configured root (default: `~/PaperHub/workspace`); read + write inside the root only | Save downloaded PDFs, export decks / trace JSON. | **Reuse** — `@modelcontextprotocol/server-filesystem` (Anthropic official, npm). Pinned to a release **post-CVE-2025-53109/53110** (path-traversal fixes); regression test for `..` traversal added to PaperHub's test suite. |
-| `sqlite` | Read-only connection; allow-list of safe tables (`papers`, `tags`, `notes`, `citations`, `tool_calls`, `runs`, `chat_sessions`, `messages`) | Power the SQL Agent's NL2SQL queries against the metadata DB. | **Wrap** — official `mcp/server-sqlite` is archived and not read-only-with-allow-list. Build a thin FastMCP server (~50 LoC) on `sqlite3` exposing `query` + `schema` with the table allow-list enforced. Reference: `hannesrudolph/sqlite-explorer-fastmcp-mcp-server`. |
+## III-5. ④ Knowledge Pipelines (Paper + Slide) & RAG
 
-**Server-side MCP surface** (`paperhub.*`, exposed to external clients such as Claude Desktop, Cursor, automation workflows):
+Two in-repo pipelines own everything between raw arXiv / PDF / LaTeX inputs and the final answer or deck. Both write `tool_calls` rows for each step so the audit trail is complete.
 
-| Method | Backing sub-agent | Purpose |
+### III-5.1 Paper Pipeline (input → chunks, cache-aware)
+
+The pipeline begins with a **cache-lookup gate**: on hit it short-circuits to the membership-row insert, skipping every compute stage. This is the storage + compute optimisation introduced in v2.2.
+
+| Stage | Implementation | Reuse |
 | --- | --- | --- |
-| `paperhub.search_library(query, project_id?)` | Research Agent (single-step RAG) | Top-k chunks with citations from the user's library. |
-| `paperhub.get_paper(paper_id)` | Data layer | Full metadata + notes + tags. |
-| `paperhub.find_related(paper_id, limit?)` | Relation analysis | Related papers + edge weights. |
-| `paperhub.summarize_paper(paper_id, max_words?)` | Research Agent | Grounded summary with section citations. |
-| `paperhub.compose_slides(paper_ids[], options?)` | Report Agent | Returns PDF path + per-page metadata. |
-| `paperhub.list_runs(session_id?, since?)` | Trace store | Enumerate audit trails. |
-| `paperhub.get_trace(run_id)` | Trace store | Full `tool_calls` DAG as JSON, for replay or external review. |
+| **arXiv search** | `arxiv` Python client wrapped in a small async helper | Adapted from `paper2slides-plus/src/arxiv_utils.py` (copied + edited) |
+| **Compute content_key** | `arxiv:<arxiv_id>` for arXiv inputs; for raw PDFs / LaTeX-zip uploads, stream-hash the file with `sha256` and use `sha256:<hex>`. Resolves the input to a stable cache identity. | New |
+| **Cache lookup** | `SELECT id FROM paper_content WHERE content_key = ?`. **On hit:** skip every downstream stage; the Paper Pipeline emits a single `tool_calls` row `paper_pipeline.cache_hit` and returns the existing `paper_content_id`. **On miss:** continue. | New |
+| **Source download** | `arxiv.Result.download_source()` for e-print archives; HTTP GET for raw PDFs; ZIP extract for LaTeX projects; routed by input shape. Writes into `workspace/papers_cache/{arxiv/<arxiv_id>,upload/<sha256>}/source/`. | Adapted from `paper2slides-plus/src/file_utils.py` |
+| **Text extraction** | LaTeX preamble strip + `\section{…}` aware splitting for `.tex`; PyMuPDF for raw PDFs; recursive find for LaTeX-project archives | Adapted from `paper2slides-plus/src/{latex_utils,pdf_utils,arxiv_utils}.py` |
+| **Chunking** | Token-windowed greedy chunker with section-aware boundaries on LaTeX (`cl100k_base` encoding, target 800 / hard 1000) | New (Phase A code carries over conceptually) |
+| **Embedding** | `sentence-transformers BAAI/bge-small-en-v1.5` (lazy-loaded; 384-dim) | New |
+| **Render to HTML** | One-shot conversion of the flattened LaTeX / extracted PDF text into a single navigable HTML document; emits `source.html` in the cache dir alongside `source.flattened.tex`; chunk `char_start` / `char_end` offsets index into this HTML so the Citation Canvas (FR-03) can scroll + highlight without re-rendering at click time. Tool: `pandoc` (LaTeX → HTML5) or a minimal `pylatexenc` fallback for malformed sources; PDF inputs go through PyMuPDF text + layout. Path written to `paper_content.html_path`. | New |
+| **Persistence (content layer)** | Insert one `paper_content` row (with `content_key`, `source_path`, `source_dir_path`, `html_path`, metadata) + N `chunks` rows (FK `paper_content_id`) + N Chroma vectors. **This runs at most once per unique paper across the lifetime of the workspace.** | New |
+| **Persistence (membership layer)** | Insert one `papers (session_id, paper_content_id, enabled=true, added_at)` row. This stage runs on **both** the cache-hit and cache-miss paths — it's the only stage UC-2's "add to session" always executes. | New |
 
-PaperHub is therefore both an MCP *client* (calling external tools) and an MCP *server* (exposing its own primitives) — the same scope-checker and tracer govern both directions.
+### III-5.2 RAG retrieval (chunks → answer)
 
-## 3. End-to-End Data Flow: Q&A Pipeline
+The Research Agent's `paper_qa` flow:
 
-The following diagram traces a user's question — *"What metric did Chen 2024 use?"* — through intent classification, vector retrieval, source annotation, and chat-history persistence.
+1. Resolve `enabled_paper_content_ids = SELECT paper_content_id FROM papers WHERE session_id = :session_id AND enabled = TRUE` for the current session.
+2. Chroma vector search filtered by `paper_content_id ∈ enabled_paper_content_ids` → top-`min(50, ⌈corpus_size / 3⌉)` candidates.
+3. Cross-encoder rerank (`BAAI/bge-reranker-base`) → top-5.
+4. Render passages with `[chunk:<chunk_id>]` markers; LLM generates an answer constrained to cite these markers; the React renderer rewrites them into clickable Citation Canvas triggers.
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant U   as "User (React UI)"
-    participant API as "Orchestrator (FastAPI)"
-    participant LLM as "LLM Module"
-    participant V   as "Vector Store"
-    participant SQL as "SQLite"
-    participant PDF as "PDF (Local FS)"
+Every stage (Chroma query, rerank, LLM call) is a separate `tool_calls` row so the Trace panel shows the full DAG.
 
-    U->>API: POST /chat — "What metric did Chen 2024 use?"
-    API->>LLM: Intent classification
-    LLM-->>API: intent = paper_qa
-    API->>V: Dense search (Top-50)
-    V-->>API: Candidate chunks + paper_id
-    Note over API: Cross-encoder rerank, keep Top-5
-    API->>SQL: Lookup paper metadata + page numbers
-    SQL-->>API: title, authors, page
-    Note over API,LLM: Prompt = retrieved chunks + question<br/>+ rule: must cite page, refuse if no data
-    API->>LLM: Generate answer
-    LLM-->>API: Answer text
-    API->>SQL: Append chat history
-    API-->>U: Answer + source (§4.2, p.7)
-    U->>PDF: Click source, jump to PDF page
+### III-5.3 Slide Pipeline (chunks → deck)
+
+The Report Agent's `slides` flow:
+
+1. Resolve `enabled_paper_content_ids` (same scope rule as Q&A — §III-5.2 step 1).
+2. **Structure planning** — LLM (flagship tier) reads paper abstracts + section list of each enabled reference (joined from `paper_content`) and produces a `SlidePlan(sections: list[Section])` Pydantic object.
+3. **Per-section generation** — LangGraph fan-out: one LLM call per planned section, each retrieving its top-k supporting chunks via the same RAG retriever.
+4. **Render** — choose one of three target frameworks. **Decision deliberately deferred** (v2.1): each option has a materially different toolchain footprint and the call should be made when slide-pipeline implementation starts, not at SRS time. The choice cascades into (a) the slide artefact extension under `workspace/chat_session/<session_id>/` (§III-7 currently shows the LaTeX-shaped `slide.tex` / `slide.pdf` — provisional until this resolves), and (b) whether the copied `paper2slides-plus` LaTeX helpers are load-bearing or dead weight. Options:
+   - **Marp** (Markdown → PDF / HTML / PPTX via the `marp-cli`; no LaTeX install required; fastest path)
+   - **Slidev** (Markdown + Vue components → HTML / PDF; richer interactivity)
+   - **Beamer-via-LangGraph** (rebuild `paper2slides-plus`'s LaTeX feedback loop in a clean LangGraph node graph — supports math + figures losslessly, requires a LaTeX install)
+4a. **Figure-path resolution across the cache boundary (v2.2).** Each contributing paper's figures live under `workspace/papers_cache/{arxiv/<arxiv_id>,upload/<sha256>}/source/`, not under the per-session output dir. The slide source therefore cannot use bare relative paths like `figures/fig1.pdf` — it must reach across the cache boundary. The Slide Pipeline owns this rewrite at emit time, framework-specific:
+   - **Beamer-via-LangGraph** — emit a single `\graphicspath{}` directive at the top of `slide.tex` listing every contributing paper's cache source dir, e.g. `\graphicspath{ {<abs_workspace>/papers_cache/arxiv/2403.01234/source/} {<abs_workspace>/papers_cache/arxiv/2401.05678/source/} }`. Then a per-figure `\includegraphics{fig_name}` resolves by LaTeX's own search order. The pipeline reuses the `\includegraphics` path-rewrite helper copied from `paper2slides-plus/src/latex_utils.py`, adapted to write **absolute** cache paths rather than per-session relative ones.
+   - **Marp** — rewrite `![alt](figures/foo.pdf)` to `![alt](file://<abs_workspace>/papers_cache/<key>/source/figures/foo.pdf)` at emit time; `marp-cli` resolves `file://` URIs for local renders.
+   - **Slidev** — same as Marp.
+   - **Path basis.** Absolute paths (rooted at the workspace) are written into the emitted slide source so the file renders correctly without environment assumptions. Slide source is intentionally **not** portable across machines under v2.2 — moving a workspace requires re-emitting the slide; this is acceptable for the local-only demo scope.
+   - **Trace.** This rewrite emits one `tool_calls` row per contributing paper (`slide_pipeline.figure_path_rewrite`) so the audit log shows which cache dirs the deck depends on. If a referenced figure is missing from the cache (e.g. e-print archive omitted it), the row goes `status='error'` and the deck still renders without that figure, with a red row in the Trace panel (NFR-02).
+5. **Emit** — output written under `workspace/reports/<run_id>/`, returned as a downloadable chip in the chat.
+
+Reused from `paper2slides-plus`: LaTeX helpers (preamble templates, `\includegraphics` path rewrites, citation-key handling). **Not** reused: the slide-generation orchestrator (`paper2slides-plus/src/core.py:generate_slides` chain — a modern LangGraph rebuild gives us tracing per step and conditional retries by section).
+
+### III-5.4 Vector store
+
+**Chroma** (local file backend, under workspace). Houses every chunk emitted by the Paper Pipeline — keyed by `paper_content_id` (v2.2 two-layer split, §III-7), so each unique paper has exactly one set of vectors regardless of how many sessions reference it. Queried by both `paper_qa` retrieval and `slides` per-section retrieval. Metadata filters include `paper_content_id`, `section`, `char_start`, `char_end` so the Citation Canvas can resolve clicks without extra DB hits.
+
+## III-6. ⑤ External Systems & APIs
+
+PaperHub talks to a small set of external surfaces. **There is no `paper2slides-plus` service** — the project is decomposed and its useful pieces are copied in (§III-8). **There is no `arxiv` MCP** — arXiv is reached directly via the adapted Python helper inside the Paper Pipeline (§III-5.1). **There is no `web_search` MCP** — no organic use case in the current scope; can be re-added later if a free-text search fallback becomes needed.
+
+| External system | How PaperHub talks to it | Scope |
+| --- | --- | --- |
+| `filesystem` MCP | `@modelcontextprotocol/server-filesystem` (npm, CVE-pinned) | Single workspace root; `..` rejected; symlink-escape rejected |
+| `sqlite` MCP *(in-repo)* | In-process FastMCP server | Read-only; table allowlist `{paper_content, papers, chunks, chat_sessions, messages, runs, tool_calls}`; `SELECT` only via `sqlglot` parse |
+| LLM provider APIs | LiteLLM adapter (Gemini / Anthropic / OpenAI / Ollama) | API key required; redacted in `tool_calls.args_redacted_json` |
+| arXiv API *(not an MCP)* | `arxiv` Python client invoked from inside the Paper Pipeline | Domain pinned to `arxiv.org`; per-ToS rate limit honoured by the client |
+
+A **server-side** `paperhub.*` MCP surface exposes `get_paper`, `search_library`, `list_runs`, `get_trace` so external MCP clients (Claude Desktop, Cursor) can drive PaperHub through the same tracer.
+
+## III-7. ⑥ Database — Schema + On-Disk Layout
+
+Six tables in one SQLite file. Papers are **session-scoped** (each `papers` row carries a `session_id`) — this mirrors the on-disk tree below where every imported paper lives under the chat session that imported it.
+
+```sql
+chat_sessions  (id, created_at, title)
+paper_content  (id, content_key UNIQUE, kind, arxiv_id NULL, sha256 NULL,
+                title, authors_json, year,
+                source_path, source_dir_path, html_path,
+                ingested_at)
+papers         (id, session_id → chat_sessions.id,
+                paper_content_id → paper_content.id,
+                enabled, added_at,
+                UNIQUE (session_id, paper_content_id))
+chunks         (id, paper_content_id → paper_content.id,
+                section, char_start, char_end, text)
+messages       (id, session_id → chat_sessions.id, role, content, run_id, created_at)
+runs           (id, session_id, routing_decision_json,
+                started_at, finished_at, status)
+tool_calls     (run_id → runs.id, branch DEFAULT '', step_index, parent_step,
+                agent, tool, model,
+                args_redacted_json, result_summary_json, latency_ms,
+                token_in, token_out, status, error,
+                PRIMARY KEY (run_id, branch, step_index))
 ```
 
-*Figure 2. End-to-end data flow of the Q&A pipeline. RAG-retrieved chunks, after reranking, are combined with metadata into a prompt; the LLM-generated answer is returned with cited page numbers.*
+**Two-layer design (v2.2)** — `paper_content` is the *physical* layer: one row per unique paper (keyed by `content_key`, where `arxiv` papers use `arxiv:<arxiv_id>` and uploads use `sha256:<hex>`), owning the on-disk artefacts and **all** `chunks` + Chroma vectors. `papers` is the *logical* / session-membership layer: one row per (session, paper) pair, carrying only the toggle (`enabled`) and `added_at`. Re-importing a paper into another session inserts a new `papers` row pointing at the existing `paper_content_id` — no re-download, no re-extraction, no re-chunking, no re-embedding (UC-2, §III-5.1).
 
-## 4. Key Architectural Decisions
+- `papers.session_id` + `papers.enabled` together drive FR-08 (session-scoped reference sources with toggle).
+- `paper_content.content_key` is the cache lookup key: `kind='arxiv'` → `content_key='arxiv:<arxiv_id>'`; `kind∈{'pdf_upload','latex_upload'}` → `content_key='sha256:<hex>'`. Exactly one of `arxiv_id` / `sha256` is populated per row (CHECK constraint).
+- `chunks` hang off `paper_content_id`, NOT `papers.id` — chunks are content-layer, deduped across sessions.
+- `chat_sessions` + `messages` back the chat history.
+- `runs` + `tool_calls` back the audit trail (FR-09).
+- `paper_content.html_path` + `chunks.char_start` / `char_end` back the Citation Canvas (FR-03).
+- `tool_calls.branch` discriminates the two halves of a Compare-mode turn under a single `run_id` (FR-04). Empty string for normal turns; `'A'` or `'B'` inside Compare. PK is `(run_id, branch, step_index)` so step indices may legitimately repeat across branches.
+- Cache GC policy: **never** (v2.2). `paper_content` rows + their on-disk cache dirs grow monotonically; orphaned content (no referencing `papers` row) is left in place. The single demo workload is small (≤ tens of papers, < 1 GB).
+- No `projects`, no `tags`, no `notes`, no `citations` graph, no `session_references` join — drop on sight if anything else accumulates here without an FR backing it. Re-importing the same `arxiv_id` in a different session creates a new `papers` row but reuses the existing `paper_content` row (no duplicate physical artefacts).
 
-| Decision | Choice | Rationale |
-| --- | --- | --- |
-| UI framework | Custom React + Tailwind, Open WebUI style | Paper relation graph and slide editor exceed Open WebUI's built-in capabilities; custom build maximizes flexibility. |
-| Workflow orchestration | LangGraph (vs hand-written if/else) | State is visualized; retries and failure-handling are first-class; debugging is far easier. |
-| Data layer | SQLite + vector store (two-component minimalist) | Sufficient for personal scale; backup is a file copy; zero ops burden. |
-| Vector store choice | `sqlite-vss` primary, Chroma fallback | `sqlite-vss` co-locates with SQLite in one file — no second service to run. |
-| LLM integration strategy | Provider Adapter | Provider prices fluctuate; the ability to swap on demand is essential for cost control. |
-| Slide generation path | LaTeX / Beamer (inherited from paper2slides-plus) | Universal in academia; supports mathematical notation; high-quality output. |
-| Agent topology | Router Agent + specialized sub-agents (Research / SQL / Report) | Makes the routing decision explicit and auditable; small classification model is cheap and easy to evaluate; sub-agents stay narrow and testable in isolation. |
-| External tool protocol | MCP, with declared scope per tool | Reuses an industry-standard protocol so external clients (Claude Desktop, Cursor) can also drive PaperHub; declarative scope means security boundaries are part of the contract, not implicit in the prompt. |
-| Tool-call tracing | Single `tool_calls` table in SQLite, written by a cross-cutting tracer | One source of truth for the UI trace panel and the evaluation harness; reproducibility comes for free. |
-| Analytics datastore | SQLite primary, DuckDB optional for the SQL Agent | SQLite handles transactional reads/writes; DuckDB handles ad-hoc OLAP queries that the SQL Agent emits, without standing up a real warehouse. |
+**On-disk layout (v2.2)** — split between a **shared content cache** (`papers_cache/`, keyed by `content_key`) and **per-session output** (`chat_session/<session_id>/`, slides only). Paper sources no longer live under the session tree.
 
-## 5. Differences from the Predecessor (paper2slides-plus)
+```
+workspace/
+├── paperhub.db                       # SQLite — all seven tables
+├── chroma/                           # Chroma chunk-vector index (per paper_content.id)
+├── papers_cache/                     # shared physical layer — one entry per paper_content row
+│   ├── arxiv/
+│   │   └── <arxiv_id>/               # for paper_content rows with kind='arxiv'
+│   │       ├── source/               # unpacked e-print archive (figures + bib + .tex)
+│   │       │   └── main.tex          # paper_content.source_path
+│   │       ├── source.flattened.tex  # for RAG chunking
+│   │       └── source.html           # paper_content.html_path (FR-03)
+│   └── upload/
+│       └── <sha256>/                 # for paper_content rows with kind∈{pdf_upload,latex_upload}
+│           ├── source/               # original archive (LaTeX upload) or source.pdf (PDF upload)
+│           ├── source.flattened.tex  # LaTeX uploads only
+│           └── source.html           # paper_content.html_path
+└── chat_session/
+    └── <session_id>/                 # one per chat_sessions.id — slides only, no paper sources
+        ├── slide.{tex,md}            # multi-paper Slide Pipeline source (extension depends on framework choice — §III-5.3)
+        └── slide.{pdf,html,pptx}     # rendered deck for the session (extension depends on framework choice — §III-5.3)
+```
 
-PaperHub is not a from-scratch rewrite; it wraps paper2slides-plus as one of its internal modules and adds a full personal-knowledge-base architecture around it. The predecessor focused on a single transformation — "single paper → slide deck" — and PaperHub demotes that to one of several pipelines while adding five new capabilities: indexing, retrieval, Q&A, research suggestion, and multi-paper integration.
+The Slide Pipeline produces **one** source-and-render pair per session (e.g. `slide.tex` + `slide.pdf`, `slide.md` + `slide.html`, …) that references any subset of the enabled papers in that session — exactly the multi-source slide-gen contract from UC-4. Re-running slides overwrites the pair; older runs survive under `workspace/reports/<run_id>/` for trace replay. **Figure-path resolution across the cache boundary is specified in §III-5.3 step 4a** — the slide source must reach figures that now live in `papers_cache/...`, not in a session-local tree.
 
-The UI and data-layer choices also diverge. paper2slides-plus used Streamlit and local files because it only needed to support a single transformation. PaperHub must persist cross-session chat history and cross-paper relations, so it adopts a custom React UI and a SQLite-backed store — yet still avoids enterprise-grade components in order to preserve the "runs on a laptop" ethos.
+**Datastore choices:**
+- **SQLite** — primary datastore (seven tables).
+- **DuckDB** *(opt-in)* — read-only analytics view via `ATTACH 'paperhub.db' AS pdb (TYPE SQLITE, READ_ONLY);`, opened per analytical query (not a live connection). Off by default; flip `PAPERHUB_SQL_ANALYTICS_DUCKDB=1` to enable for OLAP-shaped `library_stats` (window functions, complex aggregations). For the demo's small fixture set plain SQLite handles every prompt; DuckDB is the upgrade path.
+- **Chroma** — file-backed under `workspace/chroma/`.
+- **Local FS** — split between `workspace/papers_cache/{arxiv,upload}/<key>/` (shared per `paper_content` row) and `workspace/chat_session/<session_id>/` (session-scoped slide output only) per the tree above.
 
-In short: **paper2slides-plus** answers *"how do I report on this paper?"* — a tool. **PaperHub** answers *"how do I manage my entire research journey?"* — a research companion.
+## III-8. Reference-repo integration contract
+
+**Single posture: direct-copy with provenance.** Neither reference project is run as a service. Useful code is copied into the new tree and edited as needed.
+
+- **What to copy.** Utility functions, prompt templates, regex helpers, React components, CSS, MCP-tool wrappers — anything where a service boundary is overkill.
+- **What NOT to copy verbatim.** Top-level orchestrators (`paper2slides-plus/src/core.py:generate_slides`, the `chat-with-paper` route, the Node backend of `Intro2GenAI-hw1`) — these are rebuilt in the new LangGraph / FastAPI / React shape.
+- **Provenance rule.** Every copied file preserves the original LICENSE / copyright header at the top and adds a single comment: `# Adapted from reference/<repo>/<path> @ <commit>`. Greppable; a future reader can always find the source.
+- **`paper2slides-plus` reuse, concretely.** Copy + adapt: `arxiv_utils.py` (arXiv search + e-print download), `pdf_utils.py` (PDF text extraction), `latex_utils.py` (preamble strip, section split, `\includegraphics` rewrite), `file_utils.py` (workspace helpers), individual prompts from `prompts/config.yaml` where they apply. **Skip:** the chat-with-paper orchestrator (can't expose chunk-level citation IDs for the Canvas), `core.py:generate_slides` chain (rebuilt as a LangGraph node graph for per-step tracing).
+- **`Intro2GenAI-hw1` reuse, concretely.** Copy + adapt: SSE parsing loop, thinking-block disclosure CSS + DOM logic, history-sidebar layout, fork-from-message UX, MCP indicator chip styles. Re-implement in React (the source is vanilla JS, but the layout grammar and CSS variables port cleanly). **Skip:** the Node + Express backend; PaperHub's FastAPI orchestrator replaces it.
+
+## III-9. Closing principle
+
+When in doubt: **add UX polish before adding backend logic.** When tempted to add a new backend feature, check whether a utility in `reference/paper2slides-plus/` already does it (copy + adapt). When tempted to add a new agent, check whether a single MCP tool would suffice. When tempted to add a new schema table, push back hard.
