@@ -18,3 +18,12 @@
 ## Build
     npm run build
     npm run preview           # serve the production build locally
+
+## Quality gates
+
+Must pass before opening a PR:
+
+    npm test          # Vitest + RTL + MSW
+    npm run typecheck # tsc strict
+    npm run lint      # ESLint flat config
+    npm run build     # Vite production build

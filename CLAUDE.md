@@ -60,6 +60,23 @@ Replay any past run from SQLite:
 uv run paperhub-replay --run-id <N>
 ```
 
+## Frontend quality gates
+
+Before any PR, from `frontend/`:
+
+```powershell
+npm test          # Vitest + RTL + MSW; ~21 tests as of Plan B
+npm run typecheck # tsc strict
+npm run lint      # ESLint flat config
+npm run build     # Vite production build
+```
+
+End-to-end smoke (backend + frontend together, mocked LLM, from repo root):
+
+```powershell
+.\scripts\smoke_e2e.ps1
+```
+
 ## Where things live
 
 - `backend/src/paperhub/` — application code (db, models, tracing, llm, agents, api, cli)
