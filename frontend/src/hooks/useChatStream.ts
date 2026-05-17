@@ -24,6 +24,9 @@ export function useChatStream() {
       role: "assistant", content: "", run_id: null, status: "streaming",
     });
     let runId: number | null = null;
+    // True once the error has been rendered inline (mid-stream case). The outer
+    // catch checks this to decide whether to re-throw to ChatPage's toast.
+    let handledInline = false;
 
     try {
       await streamChat(
@@ -58,22 +61,31 @@ export function useChatStream() {
           onError: (err) => {
             const msg = err instanceof Error ? err.message : String(err);
             if (runId !== null) {
+              // Mid-stream: bubble has context, inline error is enough.
               store.getState().errorMessage(sessionId, runId, msg);
+              handledInline = true;
             } else {
+              // Pre-event: placeholder bubble is empty, need both surfaces.
               store.getState().failPendingAssistant(sessionId, msg);
+              // Don't set handledInline — outer catch re-throws → ChatPage toasts.
             }
           },
         },
         abortRef.current.signal,
       );
     } catch (err) {
-      // fetchEventSource may throw synchronously before onerror fires.
-      // Only call failPendingAssistant if runId is still null (onerror didn't handle it).
-      if (runId === null) {
+      // fetchEventSource may throw synchronously before onerror fires
+      // (e.g. CORS preflight reject, immediate connection refused). In that
+      // case onError didn't run; runId is still null; treat as pre-event.
+      if (!handledInline && runId === null) {
         const msg = err instanceof Error ? err.message : String(err);
         store.getState().failPendingAssistant(sessionId, msg);
       }
-      throw err;
+      // Only re-throw for pre-event failures so ChatPage's toast fires.
+      // Mid-stream failures stay inline-only.
+      if (!handledInline) {
+        throw err;
+      }
     }
   }, [store]);
 

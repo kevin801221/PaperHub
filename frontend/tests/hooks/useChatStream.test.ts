@@ -17,6 +17,45 @@ beforeEach(() => {
   useChatStore.getState().reset();
 });
 
+const enc = new TextEncoder();
+function chunk(event: string, data: unknown): Uint8Array {
+  return enc.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+const midStreamFailure = http.post(`${API_BASE_URL}/chat`, () => {
+  const stream = new ReadableStream({
+    start(controller) {
+      // Enqueue the two pre-error events synchronously so the reader can pull them.
+      controller.enqueue(
+        chunk("tool_step", {
+          record: {
+            run_id: 7, branch: "", step_index: 0, agent: "router",
+            tool: "classify", model: "x", latency_ms: 12, status: "ok",
+            parent_step: null, args_redacted_json: null,
+            result_summary_json: null, token_in: null, token_out: null,
+            error: null,
+          },
+        }),
+      );
+      controller.enqueue(
+        chunk("routing_decision", {
+          run_id: 7, branch: "",
+          decision: {
+            intent: "chitchat", model_tier: "small",
+            confidence: 0.9, reasoning: "x",
+          },
+        }),
+      );
+      // Defer the error so the reader processes the queued chunks first,
+      // then sees the stream abort mid-flight (simulating a network blip).
+      setTimeout(() => controller.error(new Error("network blip")), 10);
+    },
+  });
+  return new HttpResponse(stream, {
+    headers: { "Content-Type": "text/event-stream" },
+  });
+});
+
 describe("useChatStream", () => {
   it("runs a chitchat round-trip and updates the store", async () => {
     const sessionId = useChatStore.getState().newSession();
@@ -47,19 +86,48 @@ describe("useChatStream", () => {
     const sessionId = useChatStore.getState().newSession();
     const { result } = renderHook(() => useChatStream());
 
+    let threw = false;
     await act(async () => {
       try {
         await result.current.send(sessionId, "hello");
       } catch {
-        /* expected */
+        threw = true;
       }
     });
+
+    expect(threw).toBe(true); // pre-event failures DO propagate to caller (→ toast)
 
     await waitFor(() => {
       const session = useChatStore.getState().sessions.find((s) => s.id === sessionId);
       const assistant = session!.messages.find((m) => m.role === "assistant")!;
       expect(assistant.status).toBe("error");
       expect(assistant.error).toBeTruthy();
+    });
+  });
+
+  it("mid-stream failure: inline error only, no re-throw", async () => {
+    server.resetHandlers(midStreamFailure);
+    const sessionId = useChatStore.getState().newSession();
+    const { result } = renderHook(() => useChatStream());
+
+    let threw = false;
+    await act(async () => {
+      try {
+        await result.current.send(sessionId, "hello");
+      } catch {
+        threw = true;
+      }
+    });
+
+    expect(threw).toBe(false); // mid-stream errors must NOT propagate
+
+    await waitFor(() => {
+      const session = useChatStore.getState().sessions.find((s) => s.id === sessionId);
+      const assistant = session!.messages.find((m) => m.role === "assistant")!;
+      expect(assistant.status).toBe("error");
+      expect(assistant.error).toBeTruthy();
+      // The run_id was patched from the tool_step before the failure
+      expect(assistant.run_id).toBe(7);
     });
   });
 });
