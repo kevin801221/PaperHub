@@ -34,5 +34,6 @@ try {
     Write-Host "`n--- Replay ---"
     uv run paperhub-replay --run-id 1
 } finally {
-    Stop-Process -Id $server.Id -Force
+    # uv spawns a python child holding the listening socket; kill the whole tree, not just the launcher.
+    & taskkill.exe /F /T /PID $server.Id 2>&1 | Out-Null
 }

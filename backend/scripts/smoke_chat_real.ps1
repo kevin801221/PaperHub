@@ -16,7 +16,8 @@ Get-Content $envFile | ForEach-Object {
     if ($idx -lt 1) { return }
     $key = $line.Substring(0, $idx).Trim()
     $val = $line.Substring($idx + 1).Trim()
-    if ($val.StartsWith('"') -and $val.EndsWith('"')) {
+    if (($val.StartsWith('"') -and $val.EndsWith('"')) -or
+        ($val.StartsWith("'") -and $val.EndsWith("'"))) {
         $val = $val.Substring(1, $val.Length - 2)
     }
     if ($val -ne "") {
@@ -50,6 +51,16 @@ if (Test-Path $env:PAPERHUB_WORKSPACE) {
 Remove-Item Env:PAPERHUB_ROUTER_MOCK -ErrorAction SilentlyContinue
 Remove-Item Env:PAPERHUB_CHITCHAT_MOCK -ErrorAction SilentlyContinue
 
+# Pre-flight: port must be free so the /health probe can't succeed against an orphan from a prior run.
+$portInUse = $false
+try {
+    $tcp = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 8766)
+    $tcp.Start(); $tcp.Stop()
+} catch { $portInUse = $true }
+if ($portInUse) {
+    throw "Port 8766 already in use. Kill the orphan uvicorn process (taskkill /F /IM python.exe or similar) and retry."
+}
+
 $server = Start-Process -PassThru -NoNewWindow uv -ArgumentList @(
     "run", "uvicorn", "paperhub.app:app", "--host", "127.0.0.1", "--port", "8766"
 )
@@ -73,5 +84,6 @@ try {
     Write-Host "`n--- Replay ---"
     uv run paperhub-replay --run-id 1
 } finally {
-    Stop-Process -Id $server.Id -Force
+    # uv spawns a python child holding the listening socket; kill the whole tree, not just the launcher.
+    & taskkill.exe /F /T /PID $server.Id 2>&1 | Out-Null
 }
