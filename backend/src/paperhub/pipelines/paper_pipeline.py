@@ -132,7 +132,10 @@ class PaperPipeline:
             (session_id, paper_content_id),
         ) as cur:
             row = await cur.fetchone()
-        assert row is not None
+        if row is None:
+            raise RuntimeError(
+                "papers row missing after INSERT — DB invariant violated"
+            )
         return int(row[0])
 
     async def _fresh_ingest(
@@ -184,8 +187,8 @@ class PaperPipeline:
         texts = [c.text for c in chunks]
         embeddings = self._embedder.embed(texts)
 
-        # Persist.
-        paper_content_id = await self._persist_paper_content(
+        # Persist paper_content + chunks in a single transaction.
+        paper_content_id, chunk_ids = await self._persist_paper_content_and_chunks(
             content_key=content_key,
             kind="arxiv",
             arxiv_id=arxiv_id,
@@ -194,8 +197,8 @@ class PaperPipeline:
             source_path=source_path,
             source_dir_path=cache_dir,
             html_path=html_path,
+            chunks=chunks,
         )
-        chunk_ids = await self._persist_chunks(paper_content_id, chunks)
 
         self._chroma.add_chunks(
             paper_content_id=paper_content_id,
@@ -251,7 +254,7 @@ class PaperPipeline:
             "pdf_upload" if kind == "pdf" else "latex_upload"
         )
 
-        paper_content_id = await self._persist_paper_content(
+        paper_content_id, chunk_ids = await self._persist_paper_content_and_chunks(
             content_key=content_key,
             kind=db_kind,
             arxiv_id=None,
@@ -260,8 +263,8 @@ class PaperPipeline:
             source_path=source_path,
             source_dir_path=cache_dir,
             html_path=html_path,
+            chunks=chunks,
         )
-        chunk_ids = await self._persist_chunks(paper_content_id, chunks)
 
         self._chroma.add_chunks(
             paper_content_id=paper_content_id,
@@ -273,7 +276,7 @@ class PaperPipeline:
         papers_id = await self._link_to_session(req.session_id, paper_content_id)
         return paper_content_id, papers_id, str(metadata.get("title", ""))
 
-    async def _persist_paper_content(
+    async def _persist_paper_content_and_chunks(
         self,
         *,
         content_key: str,
@@ -284,48 +287,57 @@ class PaperPipeline:
         source_path: Path,
         source_dir_path: Path,
         html_path: Path,
-    ) -> int:
-        await self._conn.execute(
-            "INSERT INTO paper_content "
-            "(content_key, kind, arxiv_id, sha256, title, authors_json, year, "
-            "abstract, source_path, source_dir_path, html_path) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                content_key,
-                kind,
-                arxiv_id,
-                sha256,
-                str(metadata.get("title", "")),
-                json.dumps(metadata.get("authors", [])),
-                metadata.get("year"),
-                str(metadata.get("abstract", "")),
-                str(source_path),
-                str(source_dir_path),
-                str(html_path),
-            ),
-        )
-        async with self._conn.execute("SELECT last_insert_rowid()") as cur:
-            row = await cur.fetchone()
-        await self._conn.commit()
-        return int(row[0])  # type: ignore[index]
-
-    async def _persist_chunks(
-        self,
-        paper_content_id: int,
         chunks: list[Chunk],
-    ) -> list[int]:
-        chunk_ids: list[int] = []
-        for c in chunks:
+    ) -> tuple[int, list[int]]:
+        """Persist paper_content + chunks in a single atomic transaction.
+
+        Returns (paper_content_id, chunk_ids).  If anything raises, the
+        partial writes are rolled back automatically.
+        """
+        await self._conn.execute("BEGIN")
+        try:
             await self._conn.execute(
-                "INSERT INTO chunks (paper_content_id, section, char_start, char_end, text) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (paper_content_id, c.section, c.char_start, c.char_end, c.text),
+                "INSERT INTO paper_content "
+                "(content_key, kind, arxiv_id, sha256, title, authors_json, year, "
+                "abstract, source_path, source_dir_path, html_path) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    content_key,
+                    kind,
+                    arxiv_id,
+                    sha256,
+                    str(metadata.get("title", "")),
+                    json.dumps(metadata.get("authors", [])),
+                    metadata.get("year"),
+                    str(metadata.get("abstract", "")),
+                    str(source_path),
+                    str(source_dir_path),
+                    str(html_path),
+                ),
             )
             async with self._conn.execute("SELECT last_insert_rowid()") as cur:
                 row = await cur.fetchone()
-            chunk_ids.append(int(row[0]))  # type: ignore[index]
-        await self._conn.commit()
-        return chunk_ids
+            assert row is not None
+            paper_content_id = int(row[0])
+
+            chunk_ids: list[int] = []
+            for c in chunks:
+                await self._conn.execute(
+                    "INSERT INTO chunks "
+                    "(paper_content_id, section, char_start, char_end, text) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (paper_content_id, c.section, c.char_start, c.char_end, c.text),
+                )
+                async with self._conn.execute("SELECT last_insert_rowid()") as cur:
+                    cid_row = await cur.fetchone()
+                assert cid_row is not None
+                chunk_ids.append(int(cid_row[0]))
+
+            await self._conn.commit()
+        except Exception:
+            await self._conn.execute("ROLLBACK")
+            raise
+        return paper_content_id, chunk_ids
 
     def _lookup_arxiv_metadata(self, arxiv_id: str) -> dict[str, object]:
         """Fetch title/authors/year from arXiv API (sync call — see module docstring)."""

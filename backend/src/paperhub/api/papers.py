@@ -142,7 +142,10 @@ async def attach_from_library(body: FromLibraryBody) -> IngestResponse:
             (body.session_id, body.paper_content_id),
         ) as cur:
             papers_row = await cur.fetchone()
-        assert papers_row is not None
+        if papers_row is None:
+            raise HTTPException(
+                500, "papers row missing after INSERT — DB invariant violated"
+            )
     return IngestResponse(
         paper_content_id=body.paper_content_id,
         papers_id=int(papers_row[0]),
