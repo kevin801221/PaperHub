@@ -2,11 +2,12 @@
 
 Strategy:
 - LaTeX: pandoc primary (good math + figure support). pylatexenc fallback
-  when pandoc is absent.
+  when pandoc is absent OR exits non-zero (idiosyncratic LaTeX is common).
 - PDF: PyMuPDF's HTML export (preserves layout enough for highlight scrolling).
 """
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 from pathlib import Path
@@ -15,6 +16,8 @@ from typing import Literal
 import pymupdf
 from pylatexenc.latex2text import LatexNodes2Text
 
+logger = logging.getLogger(__name__)
+
 
 def render_html(*, source: Path, kind: Literal["latex", "pdf"], out_path: Path) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -22,7 +25,21 @@ def render_html(*, source: Path, kind: Literal["latex", "pdf"], out_path: Path) 
         _render_pdf(source, out_path)
     elif kind == "latex":
         if shutil.which("pandoc"):
-            _render_latex_pandoc(source, out_path)
+            try:
+                _render_latex_pandoc(source, out_path)
+            except subprocess.CalledProcessError as exc:
+                # Idiosyncratic LaTeX commonly trips pandoc with non-zero exit.
+                # Fall back to pylatexenc so the upstream pipeline (which has
+                # already spent significant work on download + extract) still
+                # produces a usable HTML artefact for the Citation Canvas.
+                logger.warning(
+                    "pandoc failed on %s (exit %s); falling back to pylatexenc. "
+                    "stderr: %s",
+                    source,
+                    exc.returncode,
+                    (exc.stderr or "")[:500],
+                )
+                _render_latex_pylatexenc(source, out_path)
         else:
             _render_latex_pylatexenc(source, out_path)
     else:

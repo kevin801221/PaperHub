@@ -1,4 +1,5 @@
 import shutil
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,6 +36,32 @@ def test_render_latex_falls_back_when_pandoc_missing(tmp_path: Path) -> None:
     html = out.read_text(encoding="utf-8")
     # pylatexenc fallback gives plainer output but should contain the body text.
     assert "Mixture-of-Experts" in html
+
+
+def test_render_latex_falls_back_when_pandoc_exits_nonzero(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """pandoc may be installed but exit non-zero on idiosyncratic LaTeX.
+    The renderer must fall back to pylatexenc rather than propagating
+    CalledProcessError up the stack."""
+    fixture = Path(__file__).parent / "fixtures" / "papers" / "arxiv_sample" / "main.tex"
+    out = tmp_path / "source.html"
+    err = subprocess.CalledProcessError(
+        returncode=251,
+        cmd=["pandoc", "--from", "latex"],
+        stderr="latex error: idiosyncratic preamble",
+    )
+    with (
+        patch("paperhub.pipelines.renderer._render_latex_pandoc", side_effect=err),
+        caplog.at_level("WARNING", logger="paperhub.pipelines.renderer"),
+    ):
+        render_html(source=fixture, kind="latex", out_path=out)
+
+    html = out.read_text(encoding="utf-8")
+    assert "Mixture-of-Experts" in html  # pylatexenc successfully produced content
+    assert any("pandoc failed" in r.message for r in caplog.records), (
+        "expected a WARNING log on pandoc-exit-nonzero fallback"
+    )
 
 
 def test_render_latex_pandoc_resolves_input_relative_to_source_dir(tmp_path: Path) -> None:
