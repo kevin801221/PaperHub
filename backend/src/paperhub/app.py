@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from paperhub.api import chat, health
+from paperhub.api import papers as papers_api
 from paperhub.config import load_settings
 from paperhub.db.connection import open_db
 from paperhub.db.migrate import apply_schema
@@ -28,11 +29,12 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["http://localhost:5173"],
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type"],
     )
     app.include_router(health.router)
     app.include_router(chat.router)
+    app.include_router(papers_api.router)
     return app
 
 
