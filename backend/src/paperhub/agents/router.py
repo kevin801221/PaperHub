@@ -30,7 +30,7 @@ async def router_node(
             **adapter_kwargs,
         )
         step.record_result(decision.model_dump())
-    target_conn = conn if conn is not None else tracer._conn  # noqa: SLF001
+    target_conn = conn if conn is not None else tracer.connection
     await target_conn.execute(
         "UPDATE runs SET routing_decision_json = ? WHERE id = ?",
         (decision.model_dump_json(), state["run_id"]),

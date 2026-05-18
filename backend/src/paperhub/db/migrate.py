@@ -6,7 +6,7 @@ import aiosqlite
 async def apply_schema(conn: aiosqlite.Connection) -> None:
     sql = (files("paperhub.db") / "schema.sql").read_text(encoding="utf-8")
     await conn.executescript(sql)
-    await conn.commit()
+    # executescript auto-commits; no explicit commit needed here.
 
     # Rebuild the FTS index from paper_content if the index is empty
     # but the source table has rows (handles upgrades from pre-FTS schemas).

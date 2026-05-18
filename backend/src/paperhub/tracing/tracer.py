@@ -45,6 +45,11 @@ class Tracer:
         self._branch = branch
         self._next_index = 0
 
+    @property
+    def connection(self) -> aiosqlite.Connection:
+        """Public accessor for the underlying DB connection."""
+        return self._conn
+
     @asynccontextmanager
     async def step(
         self,
@@ -97,9 +102,24 @@ class Tracer:
             "INSERT INTO tool_calls (run_id, branch, step_index, parent_step, "
             "agent, tool, model, args_redacted_json, result_summary_json, "
             "latency_ms, token_in, token_out, status, error) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (self._run_id, self._branch, index, parent_step,
-             agent, tool, model, args_json, result_json,
-             latency_ms, buf.token_in, buf.token_out, status, error),
+            "VALUES (:run_id, :branch, :step_index, :parent_step, "
+            ":agent, :tool, :model, :args_redacted_json, :result_summary_json, "
+            ":latency_ms, :token_in, :token_out, :status, :error)",
+            {
+                "run_id": self._run_id,
+                "branch": self._branch,
+                "step_index": index,
+                "parent_step": parent_step,
+                "agent": agent,
+                "tool": tool,
+                "model": model,
+                "args_redacted_json": args_json,
+                "result_summary_json": result_json,
+                "latency_ms": latency_ms,
+                "token_in": buf.token_in,
+                "token_out": buf.token_out,
+                "status": status,
+                "error": error,
+            },
         )
         await self._conn.commit()

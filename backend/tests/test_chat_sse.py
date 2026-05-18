@@ -12,6 +12,17 @@ from paperhub.db.migrate import apply_schema
 from paperhub.rag.retriever import RetrievedChunk
 
 
+async def _bootstrap_schema(tmp_path: Any) -> None:
+    """Seed an empty schema into the workspace DB.
+
+    ASGITransport does not trigger ASGI lifespan, so tests that don't
+    pre-populate the DB need to call this before the AsyncClient context.
+    """
+    settings = load_settings()
+    async with aiosqlite.connect(settings.db_path) as conn:
+        await apply_schema(conn)
+
+
 async def _consume_sse(stream: AsyncIterator[bytes]) -> list[tuple[str, dict]]:
     events: list[tuple[str, dict]] = []
     buf = ""
@@ -39,6 +50,7 @@ async def test_chat_sse_chitchat_round_trip(tmp_path, monkeypatch) -> None:
                        '{"intent":"chitchat","model_tier":"small",'
                        '"confidence":0.9,"reasoning":"greeting"}')
     monkeypatch.setenv("PAPERHUB_CHITCHAT_MOCK", "Hello there!")
+    await _bootstrap_schema(tmp_path)
     app = create_app()
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:  # noqa: SIM117
@@ -66,6 +78,7 @@ async def test_chat_sse_paper_search_one_shot(tmp_path, monkeypatch) -> None:
         '{"intent":"paper_search","model_tier":"flagship",'
         '"confidence":0.95,"reasoning":"add paper"}',
     )
+    await _bootstrap_schema(tmp_path)
 
     _canned = "Added arxiv:1706.03762 — Attention Is All You Need"
 
@@ -195,6 +208,7 @@ async def test_chat_sse_paper_qa_empty_refs_no_double_emit(
         '{"intent":"paper_qa","model_tier":"flagship",'
         '"confidence":0.97,"reasoning":"asks about paper"}',
     )
+    await _bootstrap_schema(tmp_path)
 
     _no_refs_msg = (
         "No references are enabled for this session. Add a paper to the "

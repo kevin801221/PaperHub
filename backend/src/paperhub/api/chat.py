@@ -15,7 +15,6 @@ from paperhub.agents.state import AgentState
 from paperhub.agents.stubs import stub_response
 from paperhub.config import load_settings
 from paperhub.db.connection import open_db
-from paperhub.db.migrate import apply_schema
 from paperhub.llm.litellm_adapter import LiteLlmAdapter
 from paperhub.models.events import (
     ErrorEvent,
@@ -131,7 +130,6 @@ async def chat_endpoint(req: ChatRequest, request: Request) -> EventSourceRespon
 
     async def stream_events() -> AsyncIterator[dict[str, Any]]:
         async with open_db(settings.db_path) as conn:
-            await apply_schema(conn)
             session_id = await _ensure_session(conn, req.session_id)
             run_id = await _new_run(conn, session_id)
             await _record_user_message(conn, session_id, req.user_message, run_id)
