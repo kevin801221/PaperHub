@@ -12,6 +12,8 @@ from pathlib import Path
 import arxiv
 from pydantic import BaseModel
 
+_client = arxiv.Client()
+
 
 class ArxivResult(BaseModel):
     arxiv_id: str
@@ -41,7 +43,7 @@ def search_arxiv(query: str, max_results: int = 10) -> list[ArxivResult]:
         sort_by=arxiv.SortCriterion.Relevance,
     )
     results: list[ArxivResult] = []
-    for r in search.results():
+    for r in _client.results(search):
         results.append(
             ArxivResult(
                 arxiv_id=_id_from_entry_id(r.entry_id),
@@ -66,7 +68,7 @@ def download_arxiv_source(arxiv_id: str, *, cache_root: Path) -> Path:
 
     # Fetch the result so arxiv can stream the source archive.
     search = arxiv.Search(id_list=[arxiv_id])
-    result = next(iter(search.results()))
+    result = next(iter(_client.results(search)))
     tar_path_str = result.download_source(dirpath=str(target_dir))
     tar_path = Path(tar_path_str)
 
