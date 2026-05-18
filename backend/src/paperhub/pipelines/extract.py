@@ -82,7 +82,7 @@ def extract_pdf(pdf_path: Path) -> str:
     if not pdf_path.exists():
         raise FileNotFoundError(pdf_path)
     pieces: list[str] = []
-    with pymupdf.open(pdf_path) as doc:
+    with pymupdf.open(pdf_path) as doc:  # type: ignore[no-untyped-call]
         for page in doc:
             pieces.append(page.get_text("text"))
     return "\n\f\n".join(pieces).strip()
