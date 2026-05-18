@@ -3,6 +3,7 @@ import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
+import { deleteBackendSession } from "@/lib/api";
 import { useChatStore } from "@/store/chat";
 
 export function Sidebar() {
@@ -19,14 +20,33 @@ export function Sidebar() {
     const idx = currentSessions.findIndex((s) => s.id === sessionId);
     const removed = useChatStore.getState().deleteSession(sessionId);
     if (!removed) return;
+
+    const backendSessionId = removed.backend_session_id;
+
+    // Defer the backend cascade-delete until the Undo window expires.  If the
+    // user clicks Undo, the flag short-circuits onAutoClose so the backend
+    // session (and its papers/messages/runs/tool_calls) stays intact.  If the
+    // session never reached the backend (backend_session_id is null), there's
+    // nothing on the server side to clean up.
+    let undone = false;
     toast("Chat deleted", {
       description: removed.title,
       action: {
         label: "Undo",
-        onClick: () =>
-          useChatStore.getState().restoreSession(removed, idx),
+        onClick: () => {
+          undone = true;
+          useChatStore.getState().restoreSession(removed, idx);
+        },
       },
       duration: 5000,
+      onAutoClose: () => {
+        if (undone || backendSessionId == null) return;
+        void deleteBackendSession(backendSessionId).catch((err: unknown) => {
+          toast.error("Failed to delete chat on server", {
+            description: err instanceof Error ? err.message : String(err),
+          });
+        });
+      },
     });
   };
 

@@ -104,6 +104,13 @@ export async function createBackendSession(): Promise<number> {
   return data.session_id;
 }
 
+/** Delete a backend session and everything tied to it (membership rows,
+ * messages, runs, tool_calls). `paper_content` rows survive — they're
+ * deduplicated across sessions. */
+export async function deleteBackendSession(sessionId: number): Promise<void> {
+  await apiFetch<undefined>(`/sessions/${sessionId}`, { method: "DELETE" });
+}
+
 /** Custom error thrown by deleteLibraryPaper when the paper is still attached
  * to one or more sessions and force=false. The UI can read `session_count` to
  * compose a confirmation prompt and retry with force=true. */
