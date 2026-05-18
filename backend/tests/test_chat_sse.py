@@ -273,7 +273,7 @@ async def test_chat_sse_exception_text_is_redacted(tmp_path: Any, monkeypatch: A
 
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test") as client:  # noqa: SIM117
         async with client.stream(
             "POST", "/chat",
             json={"session_id": None, "user_message": "hi"},
@@ -290,11 +290,10 @@ async def test_chat_sse_exception_text_is_redacted(tmp_path: Any, monkeypatch: A
 
     # messages row in DB must also have redacted text.
     settings = load_settings()
-    async with aiosqlite.connect(settings.db_path) as conn:
-        async with conn.execute(
-            "SELECT content FROM messages WHERE role = 'assistant'"
-        ) as cur:
-            row = await cur.fetchone()
+    async with aiosqlite.connect(settings.db_path) as conn, conn.execute(
+        "SELECT content FROM messages WHERE role = 'assistant'"
+    ) as cur:
+        row = await cur.fetchone()
     assert row is not None
     assert "fakekey9999" not in row[0]
     assert "<redacted:anthropic>" in row[0]
@@ -324,7 +323,7 @@ async def test_chat_sse_emits_error_event_on_router_failure(
 
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test") as client:  # noqa: SIM117
         async with client.stream(
             "POST", "/chat",
             json={"session_id": None, "user_message": "hello"},
@@ -340,7 +339,7 @@ async def test_chat_sse_emits_error_event_on_router_failure(
 
     # runs row must be status='error'.
     settings = load_settings()
-    async with aiosqlite.connect(settings.db_path) as conn:
+    async with aiosqlite.connect(settings.db_path) as conn:  # noqa: SIM117
         async with conn.execute("SELECT status FROM runs") as cur:
             row = await cur.fetchone()
     assert row is not None
@@ -376,7 +375,7 @@ async def test_chat_sse_cancellation_finalises_run(
 
     app = create_app()
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
+    async with AsyncClient(transport=transport, base_url="http://test") as client:  # noqa: SIM117
         async with client.stream(
             "POST", "/chat",
             json={"session_id": None, "user_message": "hello"},
@@ -393,7 +392,7 @@ async def test_chat_sse_cancellation_finalises_run(
     await asyncio.sleep(0.2)
 
     settings = load_settings()
-    async with aiosqlite.connect(settings.db_path) as conn:
+    async with aiosqlite.connect(settings.db_path) as conn:  # noqa: SIM117
         async with conn.execute("SELECT status FROM runs") as cur:
             row = await cur.fetchone()
     # Either 'cancelled' or 'error' is acceptable when the client disconnects.

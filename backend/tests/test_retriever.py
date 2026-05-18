@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from paperhub.rag.chroma import ChromaStore, ChunkSearchResult
-from paperhub.rag.reranker import RerankResult, Reranker
+from paperhub.rag.reranker import Reranker, RerankResult
 from paperhub.rag.retriever import RetrievedChunk, Retriever, _candidate_k
 
 # ---------------------------------------------------------------------------

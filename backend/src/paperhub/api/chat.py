@@ -13,6 +13,7 @@ from paperhub.agents.research import FinalOnlyMessage, paper_qa_stream, paper_se
 from paperhub.agents.router import router_node
 from paperhub.agents.state import AgentState
 from paperhub.agents.stubs import stub_response
+from paperhub.api.deps import get_chroma
 from paperhub.config import load_settings
 from paperhub.db.connection import open_db
 from paperhub.llm.litellm_adapter import LiteLlmAdapter
@@ -22,7 +23,6 @@ from paperhub.models.events import (
     RoutingDecisionEvent,
     TokenEvent,
 )
-from paperhub.api.deps import get_chroma
 from paperhub.pipelines.paper_pipeline import PaperPipeline
 from paperhub.rag.retriever import Retriever
 from paperhub.tracing.redactor import redact

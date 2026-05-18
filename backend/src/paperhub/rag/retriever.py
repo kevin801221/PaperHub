@@ -8,7 +8,7 @@ import numpy as np
 
 from paperhub.pipelines.embedder import Embedder, get_embedder
 from paperhub.rag.chroma import ChromaStore, ChunkSearchResult
-from paperhub.rag.reranker import RerankResult, Reranker, get_reranker
+from paperhub.rag.reranker import Reranker, RerankResult, get_reranker
 
 
 @dataclass(frozen=True)
