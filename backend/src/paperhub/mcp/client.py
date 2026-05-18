@@ -130,8 +130,11 @@ class MCPClient:
 
     async def disconnect(self) -> None:
         """Close the transport + session. Safe to call when not connected."""
+        was_connected = self._connected
         await self._close_stack_silently()
         self._connected = False
+        if was_connected:
+            _LOG.info("mcp.disconnect ok server=%s", self._config.name)
 
     async def _open_session(self, url: str) -> None:
         stack = AsyncExitStack()
@@ -224,6 +227,12 @@ class MCPClient:
                 timeout=self._config.timeout_seconds,
             )
         except TimeoutError as exc:
+            _LOG.warning(
+                "mcp.call_tool timeout server=%s tool=%s timeout=%.1fs",
+                self._config.name,
+                name,
+                self._config.timeout_seconds,
+            )
             raise MCPUnavailableError(
                 f"MCP tool {self._config.name}.{name} timed out after "
                 f"{self._config.timeout_seconds:.1f}s"
@@ -231,6 +240,12 @@ class MCPClient:
         except MCPToolError:
             raise
         except Exception as exc:  # noqa: BLE001
+            _LOG.warning(
+                "mcp.call_tool transport error server=%s tool=%s err=%s",
+                self._config.name,
+                name,
+                exc,
+            )
             raise MCPUnavailableError(
                 f"MCP tool {self._config.name}.{name} transport error: {exc}"
             ) from exc
