@@ -57,7 +57,8 @@ def search_arxiv(query: str, max_results: int = 10) -> list[ArxivResult]:
 
 def download_arxiv_source(arxiv_id: str, *, cache_root: Path) -> Path:
     """Download the e-print source tarball for an arxiv_id, unpack into
-    cache_root / arxiv_id / source / ..., return the source directory.
+    cache_root / arxiv_id / source/ — all files flattened (subdirectory
+    structure from the tarball is discarded), return the source directory.
     """
     target_dir = cache_root / arxiv_id
     source_dir = target_dir / "source"
@@ -70,14 +71,16 @@ def download_arxiv_source(arxiv_id: str, *, cache_root: Path) -> Path:
     tar_path = Path(tar_path_str)
 
     source_dir.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(tar_path, "r:gz") as tar:
-        # Strip leading directories; flatten into source/.
-        for member in tar.getmembers():
-            if member.isreg():
-                name = Path(member.name).name
-                fobj = tar.extractfile(member)
-                if fobj is None:
-                    continue
-                (source_dir / name).write_bytes(fobj.read())
-    tar_path.unlink(missing_ok=True)
+    try:
+        with tarfile.open(tar_path, "r:gz") as tar:
+            # Strip leading directories; flatten into source/.
+            for member in tar.getmembers():
+                if member.isreg():
+                    name = Path(member.name).name
+                    fobj = tar.extractfile(member)
+                    if fobj is None:
+                        continue
+                    (source_dir / name).write_bytes(fobj.read())
+    finally:
+        tar_path.unlink(missing_ok=True)
     return source_dir
