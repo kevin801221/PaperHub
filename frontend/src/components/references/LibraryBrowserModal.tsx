@@ -108,10 +108,20 @@ export function LibraryBrowserModal({
     setAttachingId(item.paper_content_id);
     try {
       await attachFromLibrary(backendSessionId, item.paper_content_id);
+      // Drop the just-attached row locally — it matches what
+      // GET /papers/library would return next (the endpoint excludes
+      // papers already in this session). Keeping the modal open lets
+      // the user attach several refs in one visit; they close with X /
+      // backdrop / Escape when done.
+      setItems((prev) =>
+        prev.filter((x) => x.paper_content_id !== item.paper_content_id),
+      );
       onAttached();
-      onClose();
-    } catch {
-      // ignore
+      toast.success(`Added "${item.title}" to this session`);
+    } catch (err) {
+      toast.error(
+        `Failed to attach "${item.title}": ${err instanceof Error ? err.message : String(err)}`,
+      );
     } finally {
       setAttachingId(null);
     }

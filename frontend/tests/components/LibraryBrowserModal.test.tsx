@@ -69,7 +69,7 @@ describe("LibraryBrowserModal", () => {
     expect(receivedQueries.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("calls onAttached and onClose after attaching a paper", async () => {
+  it("attaches a paper, fires onAttached, keeps the modal open, and removes the row from the list", async () => {
     server.use(
       http.get(`${API_BASE_URL}/papers/library`, () =>
         HttpResponse.json(sampleItems),
@@ -101,10 +101,20 @@ describe("LibraryBrowserModal", () => {
     });
     await userEvent.click(attachBtn);
 
+    // Multi-attach UX: modal stays open so the user can keep browsing.
     await waitFor(() => {
       expect(onAttached).toHaveBeenCalledTimes(1);
-      expect(onClose).toHaveBeenCalledTimes(1);
     });
+    expect(onClose).not.toHaveBeenCalled();
+
+    // Just-attached row drops out (matches what /papers/library would return next).
+    expect(
+      screen.queryByRole("button", { name: /attach attention is all you need/i }),
+    ).not.toBeInTheDocument();
+    // Other rows still visible.
+    expect(
+      screen.getByRole("button", { name: /attach gpt-3/i }),
+    ).toBeInTheDocument();
   });
 
   it("closes on Escape key", () => {
