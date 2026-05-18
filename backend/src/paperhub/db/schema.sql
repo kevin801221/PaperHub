@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS paper_content (
 CREATE TABLE IF NOT EXISTS papers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
-    paper_content_id INTEGER NOT NULL REFERENCES paper_content(id),
+    paper_content_id INTEGER NOT NULL REFERENCES paper_content(id) ON DELETE RESTRICT,
     enabled INTEGER NOT NULL DEFAULT 1,
     added_at TEXT NOT NULL DEFAULT (datetime('now')),
     UNIQUE (session_id, paper_content_id)
@@ -46,7 +46,7 @@ CREATE TABLE IF NOT EXISTS messages (
     session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
     content TEXT NOT NULL,
-    run_id INTEGER,
+    run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
