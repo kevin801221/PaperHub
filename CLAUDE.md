@@ -79,6 +79,15 @@ End-to-end smoke (backend + frontend together, mocked LLM, from repo root):
 .\scripts\smoke_e2e.ps1
 ```
 
+## Dev-environment caveats
+
+- **uvicorn `--reload` + concurrent `uv sync`**: if you run pytest in one shell
+  while `uvicorn --reload` is active in another, the reload watcher will see
+  uv's atomic-install temp dirs in `.venv/Lib/site-packages/` and trigger a
+  mid-install reload → `ImportError: cannot import name 'Tokenizer' from
+  'tokenizers'`. Mitigation: launch uvicorn with `--reload-exclude '.venv/**'`,
+  or stop the dev server before running tests.
+
 ## Where things live
 
 - `backend/src/paperhub/` — application code (db, models, tracing, llm, agents, api, cli)
