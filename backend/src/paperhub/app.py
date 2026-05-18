@@ -1,6 +1,7 @@
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +12,17 @@ from paperhub.api import sessions as sessions_api
 from paperhub.config import load_settings
 from paperhub.db.connection import open_db
 from paperhub.db.migrate import apply_schema
+from paperhub.mcp import MCPRegistry
 from paperhub.rag.chroma import ChromaStore
+
+
+def _mcp_servers_toml_path() -> Path:
+    """Resolve `mcp_servers.toml`. Env override → backend repo sibling."""
+    env = os.environ.get("PAPERHUB_MCP_CONFIG")
+    if env:
+        return Path(env)
+    # backend/src/paperhub/app.py → backend/mcp_servers.toml
+    return Path(__file__).resolve().parents[2] / "mcp_servers.toml"
 
 
 @asynccontextmanager
@@ -22,6 +33,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         await apply_schema(conn)
     # ChromaStore holds a PersistentClient; chromadb manages its own cleanup.
     app.state.chroma = ChromaStore(settings.chroma_dir)
+
+    # MCP registry: load mcp_servers.toml + construct (NOT connect) clients.
+    # Connection is lazy on first tool use so this never blocks startup —
+    # critical for loopback servers (e.g. the future `papers` MCP) that
+    # listen on the backend's own port and aren't accepting connections yet.
+    app.state.mcp_registry = MCPRegistry()
+    await app.state.mcp_registry.startup(_mcp_servers_toml_path())
 
     # Pre-warm embedder and reranker singletons so the first real paper_qa
     # request doesn't pay the ~5s model-load cost (Plan C field-test #3).
@@ -41,6 +59,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     yield
     # Lifespan: chroma cleanup handled internally by chromadb.
+    await app.state.mcp_registry.shutdown()
 
 
 def create_app() -> FastAPI:

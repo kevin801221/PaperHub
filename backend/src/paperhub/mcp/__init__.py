@@ -13,10 +13,12 @@ from __future__ import annotations
 from .client import MCPClient
 from .config import MCPServerConfig, load_mcp_servers
 from .errors import MCPError, MCPToolError, MCPUnavailableError
+from .registry import MCPRegistry
 
 __all__ = [
     "MCPClient",
     "MCPError",
+    "MCPRegistry",
     "MCPServerConfig",
     "MCPToolError",
     "MCPUnavailableError",
