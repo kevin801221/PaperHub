@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from sentence_transformers import CrossEncoder
 
@@ -12,6 +13,18 @@ from paperhub.config import load_settings
 class RerankResult:
     index: int
     score: float
+
+
+@runtime_checkable
+class Reranker(Protocol):
+    """Public interface for all reranker implementations.
+
+    Mirrors the Embedder Protocol pattern so retriever.py can depend on this
+    public type instead of the private _CrossEncoderReranker class.
+    """
+
+    def rerank(self, query: str, texts: list[str], top_k: int) -> list[RerankResult]:
+        ...
 
 
 class _CrossEncoderReranker:
@@ -39,7 +52,7 @@ class _CrossEncoderReranker:
 _singleton: _CrossEncoderReranker | None = None
 
 
-def get_reranker() -> _CrossEncoderReranker:
+def get_reranker() -> Reranker:
     global _singleton
     if _singleton is None:
         settings = load_settings()

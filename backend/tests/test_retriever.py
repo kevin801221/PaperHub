@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from paperhub.rag.chroma import ChromaStore, ChunkSearchResult
-from paperhub.rag.reranker import RerankResult, _CrossEncoderReranker
+from paperhub.rag.reranker import RerankResult, Reranker
 from paperhub.rag.retriever import RetrievedChunk, Retriever, _candidate_k
 
 # ---------------------------------------------------------------------------
@@ -57,9 +57,9 @@ def _fake_chroma(results: list[ChunkSearchResult]) -> ChromaStore:
     return _FakeChromaStore.create(results)  # type: ignore[return-value]
 
 
-def _fake_reranker(order: list[int], scores: list[float]) -> _CrossEncoderReranker:
+def _fake_reranker(order: list[int], scores: list[float]) -> Reranker:
     """Returns a MagicMock whose rerank() emits RerankResults in *order* with *scores*."""
-    mock = MagicMock(spec=_CrossEncoderReranker)
+    mock = MagicMock(spec=Reranker)
 
     def _rerank(query: str, texts: list[str], top_k: int) -> list[RerankResult]:
         out = [RerankResult(index=i, score=s) for i, s in zip(order, scores, strict=True)]
@@ -104,7 +104,7 @@ def test_retrieve_empty_enabled_returns_empty() -> None:
 def test_retrieve_no_candidates_returns_empty() -> None:
     """retrieve() skips reranker when chroma search returns empty list."""
     embedder = _FakeEmbedder()
-    reranker_mock = MagicMock(spec=_CrossEncoderReranker)
+    reranker_mock = MagicMock(spec=Reranker)
 
     retriever = Retriever(
         _fake_chroma([]),

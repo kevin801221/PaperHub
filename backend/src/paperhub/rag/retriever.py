@@ -8,7 +8,7 @@ import numpy as np
 
 from paperhub.pipelines.embedder import Embedder, get_embedder
 from paperhub.rag.chroma import ChromaStore, ChunkSearchResult
-from paperhub.rag.reranker import RerankResult, _CrossEncoderReranker, get_reranker
+from paperhub.rag.reranker import RerankResult, Reranker, get_reranker
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,7 @@ class Retriever:
         chroma: ChromaStore,
         *,
         embedder: Embedder | None = None,
-        reranker: _CrossEncoderReranker | None = None,
+        reranker: Reranker | None = None,
     ) -> None:
         self._chroma = chroma
         self._embedder = embedder or get_embedder()
