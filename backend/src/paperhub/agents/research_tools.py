@@ -22,6 +22,7 @@ __all__ = [
     "ArxivHit",
     "LibraryHit",
     "TOOL_SCHEMAS",
+    "_to_fts5_query",
     "add_paper_to_session_dispatch",
     "find_related_papers_dispatch",
     "search_arxiv_dispatch",
@@ -171,6 +172,23 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
+def _to_fts5_query(query: str) -> str:
+    """Sanitize a free-text query into an FTS5 MATCH expression.
+
+    Strategy: split into tokens, drop FTS5 operator characters, AND them
+    together. This gives Google-style multi-word AND semantics, which is
+    what a non-technical user expects from a search box.
+    """
+    tokens = [
+        "".join(c for c in tok if c.isalnum() or c == "_")
+        for tok in query.split()
+    ]
+    tokens = [t for t in tokens if t]  # drop empties
+    if not tokens:
+        return ""
+    return " AND ".join(tokens)
+
+
 async def search_library_dispatch(
     *,
     query: str,
@@ -178,27 +196,23 @@ async def search_library_dispatch(
     conn: aiosqlite.Connection,
     session_id: int,
 ) -> list[LibraryHit]:
-    """Full-text search across paper_content, excluding rows already in
-    this session. SQLite has no FTS in the schema yet — use LIKE on
-    title + abstract for Plan C; FTS5 is a Plan F follow-up.
-    """
-    # Match terms on title OR abstract; exclude already-attached.
-    # Known limitation (Plan F follow-up): LIKE has no ESCAPE clause, so a
-    # literal '%' in the query is interpreted as a wildcard. Acceptable for
-    # Plan C scope — users won't type literal '%'.
-    escaped = query.strip().replace("%", "")
-    like = f"%{escaped}%"
+    """Full-text search across paper_content via FTS5, excluding rows
+    already attached to this session."""
+    fts_query = _to_fts5_query(query)
+    if not fts_query:
+        return []
     sql = (
         "SELECT pc.id, pc.arxiv_id, pc.title, pc.abstract, pc.year "
         "FROM paper_content pc "
-        "WHERE (pc.title LIKE ? OR pc.abstract LIKE ?) "
+        "JOIN paper_content_fts fts ON fts.rowid = pc.id "
+        "WHERE paper_content_fts MATCH ? "
         "  AND pc.id NOT IN ("
         "    SELECT paper_content_id FROM papers WHERE session_id = ?"
         "  ) "
-        "ORDER BY pc.year DESC NULLS LAST "
+        "ORDER BY rank "
         "LIMIT ?"
     )
-    async with conn.execute(sql, (like, like, session_id, max_results)) as cur:
+    async with conn.execute(sql, (fts_query, session_id, max_results)) as cur:
         rows = await cur.fetchall()
     return [
         LibraryHit(

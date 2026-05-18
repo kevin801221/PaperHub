@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from paperhub.agents.research_tools import _to_fts5_query
 from paperhub.config import load_settings
 from paperhub.db.connection import open_db
 from paperhub.pipelines.paper_pipeline import IngestRequest, PaperPipeline
@@ -79,16 +80,19 @@ async def list_library(
 ) -> list[LibraryItem]:
     """Indexed paper_content rows NOT already in `session_id`.
 
-    Optional `q` filters on title and abstract using SQL LIKE.
-    NOTE: Plan F will replace this with FTS for proper relevance ranking.
+    Optional `q` filters on title and abstract using FTS5 MATCH — supports
+    multi-word queries with Google-style AND semantics.
     """
     where = ["pc.id NOT IN (SELECT paper_content_id FROM papers WHERE session_id = ?)"]
     args: list[int | str] = [session_id]
     if q:
-        where.append("(pc.title LIKE ? OR pc.abstract LIKE ?)")
-        # Strip '%' from query to avoid LIKE wildcard injection; Plan F FTS replaces this.
-        like = f"%{q.replace('%', '')}%"
-        args.extend([like, like])
+        fts_query = _to_fts5_query(q)
+        if fts_query:
+            where.append(
+                "EXISTS (SELECT 1 FROM paper_content_fts fts "
+                "WHERE fts.rowid = pc.id AND paper_content_fts MATCH ?)"
+            )
+            args.append(fts_query)
     sql = (
         "SELECT pc.id, pc.arxiv_id, pc.title, pc.abstract, pc.year "
         f"FROM paper_content pc WHERE {' AND '.join(where)} "

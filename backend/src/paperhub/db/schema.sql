@@ -77,3 +77,31 @@ CREATE TABLE IF NOT EXISTS tool_calls (
     error TEXT,
     PRIMARY KEY (run_id, branch, step_index)
 );
+
+CREATE VIRTUAL TABLE IF NOT EXISTS paper_content_fts USING fts5(
+    title,
+    abstract,
+    content='paper_content',
+    content_rowid='id',
+    tokenize='porter unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS paper_content_ai_fts
+AFTER INSERT ON paper_content BEGIN
+    INSERT INTO paper_content_fts(rowid, title, abstract)
+    VALUES (new.id, new.title, new.abstract);
+END;
+
+CREATE TRIGGER IF NOT EXISTS paper_content_ad_fts
+AFTER DELETE ON paper_content BEGIN
+    INSERT INTO paper_content_fts(paper_content_fts, rowid, title, abstract)
+    VALUES ('delete', old.id, old.title, old.abstract);
+END;
+
+CREATE TRIGGER IF NOT EXISTS paper_content_au_fts
+AFTER UPDATE ON paper_content BEGIN
+    INSERT INTO paper_content_fts(paper_content_fts, rowid, title, abstract)
+    VALUES ('delete', old.id, old.title, old.abstract);
+    INSERT INTO paper_content_fts(rowid, title, abstract)
+    VALUES (new.id, new.title, new.abstract);
+END;

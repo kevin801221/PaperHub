@@ -7,6 +7,7 @@ import aiosqlite
 import pytest
 
 from paperhub.agents.research_tools import (
+    _to_fts5_query,
     add_paper_to_session_dispatch,
     search_library_dispatch,
 )
@@ -185,3 +186,75 @@ async def test_add_paper_unrecognised_prefix_raises(
             conn=migrated_db,
             session_id=1,
         )
+
+
+# ---------------------------------------------------------------------------
+# FTS5 helpers
+# ---------------------------------------------------------------------------
+
+
+def test_to_fts5_query_single_token() -> None:
+    assert _to_fts5_query("transformer") == "transformer"
+
+
+def test_to_fts5_query_multi_word_ands() -> None:
+    assert _to_fts5_query("transformers attention") == "transformers AND attention"
+
+
+def test_to_fts5_query_strips_operators() -> None:
+    # FTS5 special chars should be stripped, not passed through.
+    # Tokens separated by spaces: special chars within each token are dropped.
+    assert _to_fts5_query('"transformers" -attention') == "transformers AND attention"
+
+
+def test_to_fts5_query_empty_returns_empty() -> None:
+    assert _to_fts5_query("") == ""
+    assert _to_fts5_query("   ") == ""
+
+
+async def test_search_library_matches_multi_word_queries(
+    migrated_db: aiosqlite.Connection,
+) -> None:
+    """FTS5 MATCH should hit 'On Transformers and Attention' for the
+    two-word query 'transformers attention'."""
+    session_id = await _make_session(migrated_db)
+    pcid = await _insert_paper_content(
+        migrated_db,
+        arxiv_id="2401.11111",
+        title="On Transformers and Attention",
+        abstract="We study self-attention in transformer models.",
+    )
+    # Unrelated paper that must not appear.
+    await _insert_paper_content(
+        migrated_db,
+        arxiv_id="2401.22222",
+        title="Convolutional Neural Networks",
+        abstract="CNN-based image classification.",
+    )
+
+    hits = await search_library_dispatch(
+        query="transformers attention",
+        conn=migrated_db,
+        session_id=session_id,
+    )
+    ids = {h.paper_content_id for h in hits}
+    assert pcid in ids, "Multi-word FTS5 query must match the transformer paper"
+
+
+async def test_search_library_empty_query_returns_empty(
+    migrated_db: aiosqlite.Connection,
+) -> None:
+    """A blank query should return an empty list, not error."""
+    session_id = await _make_session(migrated_db)
+    await _insert_paper_content(
+        migrated_db,
+        arxiv_id="2401.33333",
+        title="Some Paper",
+        abstract="Some abstract.",
+    )
+    hits = await search_library_dispatch(
+        query="   ",
+        conn=migrated_db,
+        session_id=session_id,
+    )
+    assert hits == []
