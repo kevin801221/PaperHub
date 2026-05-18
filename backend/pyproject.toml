@@ -51,3 +51,11 @@ exclude = ["tests/fixtures/"]
 [[tool.mypy.overrides]]
 module = ["litellm.*", "sse_starlette.*", "arxiv.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["pymupdf.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["paperhub.pipelines.extract"]
+disallow_untyped_calls = false
