@@ -3217,3 +3217,108 @@ Browser verification (manual):
 - Library Browser: open, search, attach an existing paper → appears in Reference Sources without re-download.
 
 ---
+
+## Plan C v2.5 Follow-up Tasks (MCP client layer + open-webSearch integration)
+
+> **Status:** v2.4 shipped. Manual paper-search testing on short / vague queries (e.g. "that diffusion paper everyone cites", "Mamba 的後續工作") surfaced **a UX failure inside the v2.4 read-only loop** — Semantic Scholar's lexical match consistently misses on indirect references; the agent burns its 3-call external-search budget on slight rephrasings and surrenders a thin shortlist. v2.5 fixes this by **shipping the MCP client layer** Plan C's original SRS intent expected (and which Plan C's actual implementation skipped — accepted technical debt — see SRS §III-7 v2.5 course-correction note) and integrating `Aas-ee/open-webSearch` as a no-key multi-engine discovery step. The same client layer is reused unchanged by Plan E (sqlite MCP) and Plan G (filesystem + custom `paperhub.*` MCP).
+>
+> **SRS reference**: [v2.5 entry](../specs/2026-05-17-paperhub-srs.md) + §III-6 (open-webSearch row + §III-6.1 MCP client layer subsection) + FR-07 v2.5 paragraph + §III-3 Research Agent v2.5 paragraph.
+>
+> **Design summary**: two new **discovery-only** tools (`web.search`, `web.fetch`) join the Research Agent palette under the `web.*` namespace **when the MCP registry has a reachable `web` server**; their results carry no `paper_id` and cannot enter `json:candidates`. The agent uses them as a *discover-then-refine* step before `search_semantic_scholar`. The 3-call external-search cap broadens to cover `search_semantic_scholar` + `web.search` + `web.fetch` combined. Daemon-down case: registry has no `web` server, tools don't enter the palette, `paper_search/v1` loads instead of `paper_search/v2`, behaviour reverts to v2.4 exactly. open-webSearch is an **optional external dependency** (operator runs `npm install -g open-websearch && open-websearch serve`), same posture as `pandoc`.
+
+### Task v2.5-1 — MCP client core (`paperhub.mcp.{config,errors,client}`)
+
+**Goal:** establish the per-server connector that talks to any MCP server reachable via streamable HTTP (or stdio later). Reused by Plan E + Plan G with zero code changes.
+
+**Files:**
+- New: `backend/src/paperhub/mcp/__init__.py` — module root, exports `MCPClient`, `MCPRegistry`, `MCPServerConfig`, `MCPUnavailableError`, `MCPToolError`.
+- New: `backend/src/paperhub/mcp/config.py` — `MCPServerConfig` dataclass (`name`, `transport`, `url` or `command`+`args`, `expose: list[str]`, `aliases: dict[str, str]`, `timeout_seconds: float`). Loader `load_mcp_servers(path: Path) -> list[MCPServerConfig]` reads `mcp_servers.toml` and validates each block.
+- New: `backend/src/paperhub/mcp/errors.py` — `MCPUnavailableError` (transport/connection failure), `MCPToolError` (upstream tool returned an error).
+- New: `backend/src/paperhub/mcp/client.py` — `MCPClient` wrapping `mcp.client.streamable_http.streamablehttp_client` + `mcp.ClientSession`. Methods: `connect()`, `disconnect()`, `list_tools() -> list[ToolSchema]` (returns LiteLLM-shaped JSON-schema dicts, namespaced `<server_name>.<tool>`, allowlist + alias applied), `call_tool(name: str, args: dict) -> Any` (where `name` is the un-namespaced tool name). Idempotent connect; reconnect-with-backoff on a stale-session error (cap 4 attempts).
+- New: `backend/pyproject.toml` — add `mcp>=1.0.0` to `[project] dependencies`.
+- New: `backend/mcp_servers.toml.example` — checked-in template with the `web` server block commented in; real `mcp_servers.toml` is gitignored.
+- Modify: `backend/.gitignore` — add `mcp_servers.toml`.
+
+**Tests:** new `tests/mcp/__init__.py`, `tests/mcp/test_config.py` (valid TOML, missing fields, alias validation), `tests/mcp/test_client.py` (stub `streamablehttp_client` with `asynccontextmanager` → fake server returning canned `tools/list` + `tools/call`; assert connect → list → call round-trip; assert namespacing; assert timeout; assert `MCPUnavailableError` on transport failure).
+
+**Acceptance:** `uv run pytest tests/mcp/` passes; `uv run mypy src/paperhub/mcp` strict-clean.
+
+### Task v2.5-2 — Registry + FastAPI lifespan wiring (`paperhub.mcp.registry`)
+
+**Goal:** stand up a process-wide MCP registry that loads `mcp_servers.toml` at FastAPI startup, calls `MCPClient.connect()` for each server (logging WARN on failure, continuing on success), and exposes `aggregate_tool_schemas()` + `call(namespaced_name, args)` to consumers.
+
+**Files:**
+- New: `backend/src/paperhub/mcp/registry.py` — `MCPRegistry` class: `startup(config_path: Path)`, `shutdown()`, `aggregate_tool_schemas() -> list[dict]` (concat per-server namespaced schemas), `call(namespaced_name, args)` (splits `<server>.<tool>`, routes to the right `MCPClient`), `has_tool(namespaced_name) -> bool`.
+- Modify: `backend/src/paperhub/api/main.py` (or wherever FastAPI's lifespan is defined — verify location) — attach the registry: `app.state.mcp_registry = MCPRegistry(); await app.state.mcp_registry.startup(...)` in the lifespan startup, `await app.state.mcp_registry.shutdown()` in shutdown.
+
+**Tests:** `tests/mcp/test_registry.py` — load a TOML fixture with two servers (one reachable, one unreachable, both stubbed); assert `startup()` returns success with one reachable client; `aggregate_tool_schemas` excludes the unreachable server's tools; `call("web.search", {...})` routes correctly; `call("unknown.tool", {...})` raises a clear error.
+
+**Acceptance:** existing `uv run pytest -v` runs unchanged (registry initialised but no MCP servers exposed by default in test env); add `tests/api/test_lifespan_mcp.py` asserting `app.state.mcp_registry` exists after startup.
+
+### Task v2.5-3 — Research Agent integration (schema aggregation + namespaced dispatch)
+
+**Goal:** wire the MCP registry into the existing Research Agent dispatch path without changing the in-process tool behaviour or the tracer-step shape.
+
+**Files:**
+- Modify: [`backend/src/paperhub/agents/research_tools.py`](../../../backend/src/paperhub/agents/research_tools.py) — replace the module-level `TOOL_SCHEMAS` constant with a builder `build_tool_schemas(mcp_registry: MCPRegistry | None) -> list[dict]` that returns the base 3 schemas + `mcp_registry.aggregate_tool_schemas()`. Keep `TOOL_SCHEMAS = build_tool_schemas(None)` as a transitional export so legacy callers still type-check (delete in v2.5-5 cleanup).
+- Modify: [`backend/src/paperhub/agents/research.py`](../../../backend/src/paperhub/agents/research.py) — `_dispatch_paper_search_tool_call` gains a branch: `if "." in call["function"]["name"]: result = await mcp_registry.call(name, args)`. The tracer step name format becomes `paper_search:<namespaced_name>` (e.g. `paper_search:web.search`) — preserves existing ToolStrip rendering. MCP-routed results are **not** indexed into `recent_results` (they're discovery-only). Errors caught and translated to `{"error": str(exc), "tool": name}` so the LLM gets a clean fallback signal.
+- Modify: `MAX_EXTERNAL_SEARCH_CALLS_PER_TURN = 3` — rename to `MAX_EXTERNAL_DISCOVERY_CALLS_PER_TURN` (semantically broader) and have the cap counter increment on **both** `search_semantic_scholar` calls and `web.*` calls.
+- Modify: [`backend/src/paperhub/api/chat.py`](../../../backend/src/paperhub/api/chat.py) and [`backend/src/paperhub/agents/research_graph.py`](../../../backend/src/paperhub/agents/research_graph.py) — wherever the paper_search subgraph is built, pass `app.state.mcp_registry` through so the dispatch path can reach it.
+
+**Tests:** new `tests/test_research_tools_mcp.py`:
+- Stub the registry with a fake `web.search` that returns a canned hit list; assert dispatch routes through the registry, tracer step is named `paper_search:web.search`, result is **not** added to `recent_results`.
+- Same for `web.fetch`.
+- Assert the combined cap blocks a 4th external call regardless of mix (1 SS + 3 web → 4th rejected; 3 SS + 1 web → 4th rejected).
+- Existing `tests/test_research_paper_search.py` — verify all cases still pass with `mcp_registry=None` (daemon-down path, current behaviour).
+
+**Acceptance:** `uv run pytest -v` clean; no regressions in existing 5 paper_search test cases.
+
+### Task v2.5-4 — `paper_search/v2` prompt + conditional dispatch
+
+**Goal:** add a v2 prompt that teaches the agent the discover-then-refine pattern, load it only when the MCP registry exposes `web.search`.
+
+**Files:**
+- New: `backend/src/paperhub/llm/prompts/paper_search_v2.yaml` — copy v1, add `web.search` + `web.fetch` to the tool catalogue with descriptions emphasising **discovery-only** and the "must round-trip through `search_semantic_scholar` for a citable hit" rule. Insert a worked-example trajectory in the canonical-flow section: vague user query → `web.search` → `search_semantic_scholar` (refined) → `json:candidates`. Update the call-budget note to reflect the combined cap.
+- Modify: [`backend/src/paperhub/llm/prompts/registry.py`](../../../backend/src/paperhub/llm/prompts/registry.py) — add a helper `get_paper_search_slot(mcp_registry: MCPRegistry | None) -> str` that returns `"paper_search/v2"` if the registry has `web.search`, else `"paper_search/v1"`.
+- Modify: `backend/src/paperhub/agents/research.py` — `_build_paper_search_messages` calls the helper instead of hardcoding `"paper_search/v1"`.
+
+**Tests:** new `tests/test_paper_search_prompt_selection.py` — assert v2 loads when the fake registry advertises `web.search`; assert v1 loads otherwise. New `tests/llm/test_prompts_paper_search_v2.py` — assert the v2 YAML parses, mentions both `web.search` and `web.fetch`, and includes the discovery-only rule.
+
+**Acceptance:** the v1 prompt remains unchanged (no regression risk for daemon-down case); v2 only loads when warranted.
+
+### Task v2.5-5 — Operator surface (smoke script, docs, cleanup)
+
+**Goal:** make this usable by an operator from a clean clone, and clean up transitional shims from v2.5-3.
+
+**Files:**
+- New: `backend/scripts/smoke_mcp_web.ps1` — operator-facing smoke: curl the daemon `/health` endpoint, run a single `web.search` via the Python client, print the first 3 hits. Skipped in CI (no daemon). Documented in `CLAUDE.md` alongside the other smoke scripts.
+- Modify: `CLAUDE.md` (project) — add `open-websearch` to the optional-external-dependency block next to `pandoc`. Document `open-websearch serve` as the prerequisite for v2 paper_search behaviour. Update the `backend/scripts/` smoke-script list.
+- Modify: `backend/scripts/smoke_chat_real.ps1` — when the operator has the daemon running (`scripts/smoke_mcp_web.ps1` succeeded), add an assertion that a vague-query turn routes through `paper_search:web.search` → `paper_search:search_semantic_scholar` → `search_results` SSE event with ≥ 1 candidate.
+- Modify: `README.md` (if any) — add a "Web search (optional)" subsection pointing at the open-websearch install + serve commands.
+- Cleanup: remove the transitional `TOOL_SCHEMAS = build_tool_schemas(None)` export from `research_tools.py` introduced in v2.5-3; verify no remaining callers.
+
+**Tests:** none new — this is documentation + an operator-facing script.
+
+**Acceptance:** an operator following only CLAUDE.md + README.md can install open-webSearch, run `open-websearch serve`, restart the backend, and observe v2 paper_search behaviour without reading any other docs.
+
+### Quality gates after the v2.5 round
+
+From `backend/`:
+
+```powershell
+uv run pytest -v          # +6-10 new tests across tests/mcp/, tests/test_research_tools_mcp.py, tests/test_paper_search_prompt_selection.py
+uv run ruff check src tests
+uv run mypy src           # strict-clean over the new paperhub.mcp package
+.\scripts\smoke_chat_real.ps1     # regression; daemon-down path unchanged
+.\scripts\smoke_mcp_web.ps1       # NEW — daemon-up path verification (skipped if no daemon)
+.\scripts\research_turn.ps1       # regression
+```
+
+Browser verification (manual, daemon up):
+- Turn 1 with a vague query ("that diffusion paper everyone cites") → trace shows `paper_search:web.search` → optional `paper_search:web.fetch` → `paper_search:search_semantic_scholar` → `search_results` SSE event surfaces the actual paper.
+- Turn 2 in same session: regular paper_qa works unchanged.
+
+Browser verification (manual, daemon down):
+- Same vague-query turn: trace shows only `paper_search:search_semantic_scholar` calls (no `web.*`), agent surfaces a thinner shortlist or asks a clarifying question. **No errors, no broken UX** — v2.4 behaviour exactly.
+
+---
