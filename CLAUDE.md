@@ -15,7 +15,7 @@ The SRS is decomposed into 7 sequential plans, each producing working/testable s
 | Plan | Status | Document |
 | --- | --- | --- |
 | A — Backend foundation + Router-only chat | **complete** | [2026-05-17-paperhub-A-backend-foundation.md](docs/superpowers/plans/2026-05-17-paperhub-A-backend-foundation.md) |
-| B — Frontend foundation | **complete** (see [implementation notes](docs/superpowers/plans/2026-05-18-paperhub-B-frontend-foundation-NOTES.md) for tooling-version deviations) | [2026-05-18-paperhub-B-frontend-foundation.md](docs/superpowers/plans/2026-05-18-paperhub-B-frontend-foundation.md) |
+| B — Frontend foundation | **complete** | [2026-05-18-paperhub-B-frontend-foundation.md](docs/superpowers/plans/2026-05-18-paperhub-B-frontend-foundation.md) |
 | C — Paper Pipeline + Research Agent | pending | not yet written |
 | D — Search results + Reference Sources + Citation Canvas | pending | not yet written |
 | E — SQL Agent + sqlite MCP | pending | not yet written |
@@ -65,7 +65,7 @@ uv run paperhub-replay --run-id <N>
 Before any PR, from `frontend/`:
 
 ```powershell
-npm test          # Vitest + RTL + MSW; ~21 tests as of Plan B
+npm test          # Vitest + RTL + MSW; 25 tests as of Plan B
 npm run typecheck # tsc strict
 npm run lint      # ESLint flat config
 npm run build     # Vite production build
@@ -102,7 +102,7 @@ Non-blocking polish flagged during Plan A reviews. Pick these up in a cleanup PR
 
 ## Plan B known follow-ups
 
-Tracked in detail in `docs/superpowers/plans/2026-05-18-paperhub-B-frontend-foundation-NOTES.md`. Highlights:
+Tracked here. Highlights:
 
 1. Bundle size 418 KB JS raw — code-split when Citation Canvas + Compare-split land.
 2. Drop dead deps in `frontend/package.json`: `autoprefixer`, `postcss`, `tailwindcss-animate`, redundant `@typescript-eslint/*`.
