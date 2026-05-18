@@ -218,10 +218,10 @@ def _register_tool(
     handler: Callable[..., Awaitable[list[dict[str, Any]]]],
     schemas_by_name: dict[str, dict[str, Any]],
 ) -> None:
-    """Register a handler with FastMCP and pin its JSON-schema to TOOL_SCHEMAS.
+    """Register a handler with FastMCP and pin its JSON-schema to _BASE_PAPER_TOOL_SCHEMAS.
 
     FastMCP auto-derives input schemas from Python type hints, which would
-    drift from :data:`TOOL_SCHEMAS` (default values, descriptions, the
+    drift from :data:`_BASE_PAPER_TOOL_SCHEMAS` (default values, descriptions, the
     ``required`` set). We register the function for the runtime call path,
     then mutate the stored :class:`Tool`'s ``parameters`` field so
     ``tools/list`` advertises the exact schema the LiteLLM palette uses.

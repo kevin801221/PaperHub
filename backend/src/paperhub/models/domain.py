@@ -67,7 +67,8 @@ class AgentState(TypedDict, total=False):
     #   - ps_iter: iteration counter, capped by MAX_TOOL_ITERATIONS.
     #   - ps_pending_tool_calls: tool_calls returned by the last ps_plan
     #     call; consumed (drained) by ps_dispatch_tools.
-    #   - ps_external_search_calls: external search call counter (cap).
+    #   - ps_external_discovery_calls: external discovery call counter
+    #     (cap spans papers.search_semantic_scholar + every web.* tool).
     #   - ps_recent_results: paper_id → metadata, populated by
     #     ps_dispatch_tools so ps_finalize can resolve candidates.
     #   - ps_final_text: assistant content from the terminating ps_plan
@@ -77,7 +78,7 @@ class AgentState(TypedDict, total=False):
     ps_messages: list[dict[str, Any]]
     ps_iter: int
     ps_pending_tool_calls: list[dict[str, Any]]
-    ps_external_search_calls: int
+    ps_external_discovery_calls: int
     ps_recent_results: dict[str, dict[str, Any]]
     ps_final_text: str
     ps_last_step_index: int

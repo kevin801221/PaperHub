@@ -4,7 +4,7 @@ wire protocol (SRS v2.6, Plan C Task v2.5-3).
 
 Coverage:
   * `tools/list` advertises exactly the three tools, with names + JSON-schemas
-    matching `paperhub.agents.research_tools.TOOL_SCHEMAS`.
+    matching `paperhub.agents.research_tools._BASE_PAPER_TOOL_SCHEMAS`.
   * `tools/call` delegates to the existing dispatcher functions — observable
     via DB rows (for ``search_library``), respx mocks (for the two SS tools),
     and tracer-step ``tool_calls`` rows written through the threaded Tracer.
@@ -125,8 +125,8 @@ async def test_factory_returns_fastmcp_named_papers() -> None:
 
 
 async def test_tools_list_advertises_three_tools_matching_schemas() -> None:
-    """The MCP server's tools/list output matches TOOL_SCHEMAS for the three
-    Research Agent dispatchers (names + JSON-schemas)."""
+    """The MCP server's tools/list output matches _BASE_PAPER_TOOL_SCHEMAS for the
+    three Research Agent dispatchers (names + JSON-schemas)."""
     server = build_paperhub_papers_server()
     tools = await server.list_tools()
     names = {t.name for t in tools}

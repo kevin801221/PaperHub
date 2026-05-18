@@ -369,7 +369,7 @@ async def find_related_papers_dispatch(
 
 
 # ---------------------------------------------------------------------------
-# add_paper_to_session_dispatch — NOT in TOOL_SCHEMAS as of v2.4.
+# add_paper_to_session_dispatch — NOT in _BASE_PAPER_TOOL_SCHEMAS as of v2.4.
 # Invoked by:
 #   - POST /papers (user clicks "Add as reference" in SearchResultList)
 #   - chat endpoint paper_search branch (finalize: true auto-attach)

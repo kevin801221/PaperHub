@@ -140,7 +140,8 @@ def build_paper_search_subgraph(deps: ResearchDeps) -> Any:
       * ps_messages: running LLM message list (system + user + assistant + tool)
       * ps_iter: iteration counter (cap: MAX_TOOL_ITERATIONS)
       * ps_pending_tool_calls: tool_calls from the last ps_plan response
-      * ps_external_search_calls: external search call counter
+      * ps_external_discovery_calls: external discovery call counter
+        (papers.search_semantic_scholar + every web.* tool)
       * ps_recent_results: paper_id → metadata accumulator
       * ps_final_text: assistant content when the loop terminates
       * ps_last_step_index: latest tool_calls.step_index already streamed
@@ -171,7 +172,7 @@ def build_paper_search_subgraph(deps: ResearchDeps) -> Any:
             messages = list(state["ps_messages"])
             recent_results = dict(state.get("ps_recent_results", {}))
             ps_iter = int(state.get("ps_iter", 0))
-            external_calls = int(state.get("ps_external_search_calls", 0))
+            external_calls = int(state.get("ps_external_discovery_calls", 0))
             last_step = int(state.get("ps_last_step_index", -1))
 
         msg = await _paper_search_plan_step(
@@ -196,7 +197,7 @@ def build_paper_search_subgraph(deps: ResearchDeps) -> Any:
             "ps_messages": messages,
             "ps_iter": ps_iter + 1,
             "ps_recent_results": recent_results,
-            "ps_external_search_calls": external_calls,
+            "ps_external_discovery_calls": external_calls,
             "ps_last_step_index": last_step,
         }
         if tool_calls:
@@ -231,7 +232,7 @@ def build_paper_search_subgraph(deps: ResearchDeps) -> Any:
         writer = get_stream_writer()
         messages = list(state["ps_messages"])
         recent_results = dict(state.get("ps_recent_results", {}))
-        external_calls = int(state.get("ps_external_search_calls", 0))
+        external_calls = int(state.get("ps_external_discovery_calls", 0))
         last_step = int(state.get("ps_last_step_index", -1))
         run_id: int = state["run_id"]
         session_id: int = state["session_id"]
@@ -267,7 +268,7 @@ def build_paper_search_subgraph(deps: ResearchDeps) -> Any:
             "ps_messages": messages,
             "ps_pending_tool_calls": [],
             "ps_recent_results": recent_results,
-            "ps_external_search_calls": external_calls,
+            "ps_external_discovery_calls": external_calls,
             "ps_last_step_index": last_step,
         }
 
