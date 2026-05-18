@@ -118,3 +118,72 @@ def test_download_arxiv_source_builds_src_url_without_arxiv_metadata_query(
 
     mock_results.assert_not_called()
     assert (source_dir / "paper.tex").exists()
+
+
+@respx.mock
+def test_download_arxiv_source_preserves_subdirs(tmp_path: Path) -> None:
+    """download_arxiv_source must preserve the tarball's directory structure.
+
+    Flattening to a single dir would break `\\input{sections/method}` resolution
+    in LaTeX — and silently, since extract.py emits no error on missing
+    inputs.  Confirm `sections/method.tex` lands inside `source/sections/`,
+    not `source/`.
+    """
+    main_text = (
+        r"\documentclass{article}\begin{document}"
+        r"\input{sections/method}"
+        r"\end{document}"
+    )
+    method_text = r"This is the method section content."
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, body in (("main.tex", main_text), ("sections/method.tex", method_text)):
+            info = tarfile.TarInfo(name=name)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body.encode("utf-8")))
+    tarball = buf.getvalue()
+
+    respx.get("https://arxiv.org/src/2510.03293").mock(
+        return_value=httpx.Response(200, content=tarball),
+    )
+
+    source_dir = download_arxiv_source("2510.03293", cache_root=tmp_path / "cache")
+
+    assert (source_dir / "main.tex").exists()
+    # Subdir must survive; flattening would have placed method.tex at the root.
+    assert (source_dir / "sections" / "method.tex").exists()
+    assert not (source_dir / "method.tex").exists(), (
+        "method.tex must NOT have been flattened to root — would break "
+        "\\input{sections/method} resolution"
+    )
+    assert (source_dir / "sections" / "method.tex").read_text(encoding="utf-8") == method_text
+
+
+@respx.mock
+def test_download_arxiv_source_rejects_path_traversal(tmp_path: Path) -> None:
+    """Tarball members with `..` or absolute paths must be silently dropped
+    so a malicious or malformed tarball can't write outside source/."""
+    main_text = r"\documentclass{article}\begin{document}safe\end{document}"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        for name, body in (
+            ("main.tex", main_text),
+            ("../escape.tex", r"should not land outside source/"),
+            ("safe/inner.tex", r"should land inside source/safe/"),
+        ):
+            info = tarfile.TarInfo(name=name)
+            info.size = len(body)
+            tar.addfile(info, io.BytesIO(body.encode("utf-8")))
+    tarball = buf.getvalue()
+
+    respx.get("https://arxiv.org/src/0001.00001").mock(
+        return_value=httpx.Response(200, content=tarball),
+    )
+
+    source_dir = download_arxiv_source("0001.00001", cache_root=tmp_path / "cache")
+
+    assert (source_dir / "main.tex").exists()
+    assert (source_dir / "safe" / "inner.tex").exists()
+    # The `..`/escape path must not have escaped source_dir.
+    assert not (source_dir.parent / "escape.tex").exists()
+    assert not (source_dir / "escape.tex").exists()

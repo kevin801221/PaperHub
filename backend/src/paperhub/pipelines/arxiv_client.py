@@ -65,8 +65,9 @@ def search_arxiv(query: str, max_results: int = 10) -> list[ArxivResult]:
 
 def download_arxiv_source(arxiv_id: str, *, cache_root: Path) -> Path:
     """Download the e-print source tarball for an arxiv_id, unpack into
-    cache_root / arxiv_id / source/ — all files flattened (subdirectory
-    structure from the tarball is discarded), return the source directory.
+    cache_root / arxiv_id / source/ — preserving the tarball's directory
+    structure so ``\\input{sections/foo}`` directives resolve.  Returns the
+    source directory.
     """
     target_dir = cache_root / arxiv_id
     source_dir = target_dir / "source"
@@ -99,16 +100,32 @@ def download_arxiv_source(arxiv_id: str, *, cache_root: Path) -> Path:
                 f.write(chunk)
 
     source_dir.mkdir(parents=True, exist_ok=True)
+    # Resolve once so we can sanity-check that every extracted member stays
+    # inside source_dir even after symlink/`..` resolution.
+    source_dir_resolved = source_dir.resolve()
     try:
         with tarfile.open(tar_path, "r:gz") as tar:
-            # Strip leading directories; flatten into source/.
+            # Preserve directory layout.  Many arxiv papers organise their
+            # LaTeX with subdirectories (sections/, figures/, etc.); flattening
+            # would break `\input{sections/foo}` resolution silently.  Refuse
+            # any member whose path would escape source_dir.
             for member in tar.getmembers():
-                if member.isreg():
-                    name = Path(member.name).name
-                    fobj = tar.extractfile(member)
-                    if fobj is None:
-                        continue
-                    (source_dir / name).write_bytes(fobj.read())
+                if not member.isreg():
+                    continue
+                rel = Path(member.name)
+                if rel.is_absolute() or any(part == ".." for part in rel.parts):
+                    continue  # path-traversal — skip silently
+                target_path = source_dir / rel
+                # Re-check after resolve() in case of symlink shenanigans.
+                if not str(target_path.resolve()).startswith(
+                    str(source_dir_resolved),
+                ):
+                    continue
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                fobj = tar.extractfile(member)
+                if fobj is None:
+                    continue
+                target_path.write_bytes(fobj.read())
     finally:
         tar_path.unlink(missing_ok=True)
     return source_dir

@@ -11,11 +11,14 @@ PDF extraction uses PyMuPDF's plain-text export.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import pymupdf
+
+logger = logging.getLogger(__name__)
 
 _BEGIN_DOC = re.compile(r"\\begin\{document\}")
 _END_DOC = re.compile(r"\\end\{document\}")
@@ -46,7 +49,16 @@ def _inline_recursive(text: str, root: Path, seen: set[Path]) -> str:
         if not rel.endswith(".tex"):
             rel = rel + ".tex"
         target = (root / rel).resolve()
-        if target in seen or not target.exists():
+        if target in seen:
+            return ""
+        if not target.exists():
+            # Make missing inputs visible — silently swallowing them in the
+            # past hid the tarball-flatten bug where `\input{sections/foo}`
+            # pointed at files that had been re-rooted by the extractor.
+            logger.warning(
+                "extract: missing \\input/\\include target %r (looked for %s)",
+                rel, target,
+            )
             return ""
         seen.add(target)
         inner = target.read_text(encoding="utf-8", errors="ignore")
