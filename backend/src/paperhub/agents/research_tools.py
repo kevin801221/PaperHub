@@ -1,6 +1,13 @@
-"""Research Agent tool dispatchers (SRS v2.3, FR-07).
+"""Research Agent tool dispatchers (SRS v2.4, FR-07).
 
-Each function here is intended to be exposed as a tool to the LLM.
+v2.4 design: the LLM-visible palette is **read-only**. The agent shortlists
+candidates, and the user is the sole ingestion trigger (via SearchResultList
+"Add" buttons → POST /papers) — with one exception: the agent may flag up
+to 2 picks with ``finalize: true``, which the chat endpoint auto-attaches
+on its behalf. ``add_paper_to_session_dispatch`` survives as a Python
+callable for the chat endpoint + POST /papers, but is no longer in
+``TOOL_SCHEMAS``.
+
 Contracts (JSON-schema args, structured returns) are MCP-compatible —
 Plan E wraps this module as the `paperhub-papers` MCP server with
 zero call-shape changes.
@@ -15,18 +22,27 @@ import aiosqlite
 
 from paperhub.pipelines.arxiv_client import search_arxiv as _search_arxiv_sync
 from paperhub.pipelines.paper_pipeline import IngestRequest, PaperPipeline
-from paperhub.pipelines.semantic_scholar import Mode, find_related
+from paperhub.pipelines.semantic_scholar import (
+    Mode,
+    SemanticScholarMetadata,
+    fetch_paper_metadata,
+    find_related,
+    search_papers,
+)
 
 __all__ = [
     "AddResult",
     "ArxivHit",
     "LibraryHit",
+    "NoIngestibleSourceError",
+    "SemanticScholarToolHit",
     "TOOL_SCHEMAS",
     "_to_fts5_query",
     "add_paper_to_session_dispatch",
     "find_related_papers_dispatch",
     "search_arxiv_dispatch",
     "search_library_dispatch",
+    "search_semantic_scholar_dispatch",
 ]
 
 
@@ -49,6 +65,24 @@ class ArxivHit:
 
 
 @dataclass(frozen=True)
+class SemanticScholarToolHit:
+    """LLM-visible shape of a Semantic Scholar hit.
+
+    Mirrors ``SemanticScholarHit`` from ``pipelines.semantic_scholar`` but
+    lives here so it can be exposed via the MCP wrapper alongside the
+    other tool result types.
+    """
+
+    paper_id: str  # "ss:<paperId>" or "arxiv:<arxiv_id>" (preferred when present)
+    title: str
+    abstract: str | None
+    year: int | None
+    authors: list[str]
+    arxiv_id: str | None
+    has_open_pdf: bool
+
+
+@dataclass(frozen=True)
 class AddResult:
     paper_content_id: int
     papers_id: int
@@ -56,9 +90,25 @@ class AddResult:
     title: str
 
 
+class NoIngestibleSourceError(Exception):
+    """Raised when an ``ss:<paperId>`` has no ``externalIds.ArXiv`` and no
+    ``openAccessPdf.url``. POST /papers translates this to HTTP 422 so the
+    frontend can disable the Add button persistently."""
+
+    def __init__(self, paper_id: str, title: str) -> None:
+        super().__init__(f"no ingestible source for {paper_id}")
+        self.paper_id = paper_id
+        self.title = title
+
+
 # The JSON-schemas LiteLLM (and later the MCP wrapper) hands to the LLM.
 # Keep field names + descriptions stable across Plan C/E — they become
 # part of the public MCP contract.
+#
+# v2.4: search_arxiv + add_paper_to_session are REMOVED from this list.
+# The agent is read-only (no write tool); ingestion is user-driven via
+# POST /papers, with the chat endpoint auto-attaching agent ``finalize:true``
+# picks on its behalf.
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
@@ -67,7 +117,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "description": (
                 "Search the user's already-indexed paper library (deduplicated "
                 "across all sessions). Excludes papers already attached to the "
-                "current session. Cheap. Prefer this before search_arxiv."
+                "current session. Cheap — prefer this first."
             ),
             "parameters": {
                 "type": "object",
@@ -90,11 +140,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "search_arxiv",
+            "name": "search_semantic_scholar",
             "description": (
-                "Search arXiv full-text. Use when search_library doesn't cover "
-                "the intent. May be called up to 3 times per turn with refined "
-                "queries — the loop enforces this cap."
+                "Free-text search across Semantic Scholar's ~200M paper corpus. "
+                "Returns papers with title, abstract, year, authors, plus "
+                "arxiv_id (when present) and has_open_pdf (when an open-access "
+                "PDF is available). Prefer this over arxiv-only search — "
+                "broader coverage. Use find_related_papers instead when "
+                "looking for follow-up work to a specific paper."
             ),
             "parameters": {
                 "type": "object",
@@ -119,13 +172,18 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "Citation-graph navigation via Semantic Scholar. Use when the "
                 "user wants follow-up work to a specific paper (mode=cited_by), "
                 "the references of a paper (mode=cites), or generally similar "
-                "work (mode=similar). Prefer over search_arxiv when the user "
-                "is asking 'what's next after paper X'."
+                "work (mode=similar). Prefer this for 'what's next after paper X'. "
+                "paper_id accepts 'arxiv:<id>' or 'ss:<paperId>'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "arxiv_id": {"type": "string"},
+                    "paper_id": {
+                        "type": "string",
+                        "description": (
+                            "Either 'arxiv:<id>' or 'ss:<paperId>'."
+                        ),
+                    },
                     "mode": {
                         "type": "string",
                         "enum": ["cites", "cited_by", "similar"],
@@ -137,35 +195,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                         "maximum": 25,
                     },
                 },
-                "required": ["arxiv_id", "mode"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "add_paper_to_session",
-            "description": (
-                "Attach a paper to the current session with enabled=true (so it "
-                "is immediately in scope for paper_qa). paper_id accepts "
-                "'arxiv:<id>' for arXiv ingestion or "
-                "'library:<paper_content_id>' for an already-indexed library "
-                "paper. `reason` is a short human-readable string explaining "
-                "WHY this paper matches the user's intent — surfaced in the "
-                "trace for FR-02."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "paper_id": {
-                        "type": "string",
-                        "description": (
-                            "Either 'arxiv:<id>' or 'library:<paper_content_id>'."
-                        ),
-                    },
-                    "reason": {"type": "string"},
-                },
-                "required": ["paper_id", "reason"],
+                "required": ["paper_id", "mode"],
             },
         },
     },
@@ -235,8 +265,11 @@ async def search_arxiv_dispatch(
     query: str,
     max_results: int = 8,
 ) -> list[ArxivHit]:
-    """arxiv.Search.results() is sync + network-bound — wrap in to_thread
-    to avoid blocking the event loop (review C4 fix)."""
+    """Internal arXiv search — NOT in the LLM-visible palette as of v2.4.
+
+    Kept as a Python helper for Plan F (the slides corpus may want a
+    direct arXiv lookup). The agent uses ``search_semantic_scholar`` instead.
+    """
     results = await asyncio.to_thread(_search_arxiv_sync, query, max_results)
     return [
         ArxivHit(
@@ -250,64 +283,201 @@ async def search_arxiv_dispatch(
     ]
 
 
+async def search_semantic_scholar_dispatch(
+    *,
+    query: str,
+    max_results: int = 8,
+) -> list[SemanticScholarToolHit]:
+    """Free-text Semantic Scholar search. Returns hits with an LLM-friendly
+    ``paper_id`` prefix (``arxiv:<id>`` when available, else ``ss:<paperId>``)
+    so the agent can pass it straight back into ``find_related_papers``
+    or into the final ``json:candidates`` shortlist."""
+    hits = await search_papers(query, max_results)
+    out: list[SemanticScholarToolHit] = []
+    for h in hits:
+        pid = f"arxiv:{h.arxiv_id}" if h.arxiv_id else f"ss:{h.paperId}"
+        out.append(
+            SemanticScholarToolHit(
+                paper_id=pid,
+                title=h.title,
+                abstract=h.abstract,
+                year=h.year,
+                authors=list(h.authors),
+                arxiv_id=h.arxiv_id,
+                has_open_pdf=bool(h.open_access_pdf_url),
+            ),
+        )
+    return out
+
+
 async def find_related_papers_dispatch(
     *,
-    arxiv_id: str,
+    paper_id: str,
     mode: Mode,
     max_results: int = 8,
 ) -> list[dict[str, Any]]:
-    related = await find_related(arxiv_id, mode=mode, max_results=max_results)
-    return [asdict(r) for r in related]
+    """v2.4: accepts ``arxiv:<id>`` or ``ss:<paperId>``. The Semantic Scholar
+    endpoints accept ``arXiv:<id>`` natively when the paper has an arxiv ID;
+    for ss: IDs we pass the raw paper ID. Internally we still call
+    ``find_related`` which builds the ``arXiv:<id>`` prefix itself, so for
+    ``ss:`` IDs we need to dispatch differently — for now we resolve via
+    fetch_paper_metadata first when the prefix is ``ss:``."""
+    if paper_id.startswith("arxiv:"):
+        arxiv_id = paper_id.removeprefix("arxiv:")
+        related = await find_related(arxiv_id, mode=mode, max_results=max_results)
+        return [asdict(r) for r in related]
+    if paper_id.startswith("ss:"):
+        # find_related currently only supports arxiv IDs via /paper/arXiv:<id>/...
+        # Resolve the SS paper first; if it has an arxiv ID, recurse; else
+        # surface an empty result rather than failing (the agent can fall
+        # back to search_semantic_scholar with a query).
+        meta = await fetch_paper_metadata(paper_id.removeprefix("ss:"))
+        if meta.arxiv_id:
+            related = await find_related(
+                meta.arxiv_id, mode=mode, max_results=max_results,
+            )
+            return [asdict(r) for r in related]
+        return []
+    raise ValueError(
+        f"find_related_papers: unrecognised paper_id prefix in {paper_id!r}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# add_paper_to_session_dispatch — NOT in TOOL_SCHEMAS as of v2.4.
+# Invoked by:
+#   - POST /papers (user clicks "Add as reference" in SearchResultList)
+#   - chat endpoint paper_search branch (finalize: true auto-attach)
+# ---------------------------------------------------------------------------
+
+
+async def _attach_library(
+    pcid_raw: str,
+    *,
+    conn: aiosqlite.Connection,
+    session_id: int,
+) -> AddResult:
+    pcid = int(pcid_raw)
+    await conn.execute(
+        "INSERT OR IGNORE INTO papers (session_id, paper_content_id) "
+        "VALUES (?, ?)",
+        (session_id, pcid),
+    )
+    await conn.commit()
+    async with conn.execute(
+        "SELECT p.id, pc.title FROM papers p "
+        "JOIN paper_content pc ON pc.id = p.paper_content_id "
+        "WHERE p.session_id = ? AND p.paper_content_id = ?",
+        (session_id, pcid),
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        raise RuntimeError(
+            f"library paper {pcid} not found after INSERT — DB invariant violated",
+        )
+    return AddResult(
+        paper_content_id=pcid,
+        papers_id=int(row[0]),
+        cache_hit=True,
+        title=row[1] or "",
+    )
+
+
+async def _attach_arxiv(
+    arxiv_id: str,
+    *,
+    pipeline: PaperPipeline,
+    conn: aiosqlite.Connection,  # noqa: ARG001 — pipeline owns the conn
+    session_id: int,
+) -> AddResult:
+    result = await pipeline.ingest(
+        IngestRequest(session_id=session_id, arxiv_id=arxiv_id),
+    )
+    return AddResult(
+        paper_content_id=result.paper_content_id,
+        papers_id=result.papers_id,
+        cache_hit=result.cache_hit,
+        title=result.title,
+    )
+
+
+async def _attach_pdf(
+    meta: SemanticScholarMetadata,
+    *,
+    pipeline: PaperPipeline,
+    conn: aiosqlite.Connection,  # noqa: ARG001 — pipeline owns the conn
+    session_id: int,
+) -> AddResult:
+    assert meta.open_access_pdf_url is not None, "_attach_pdf requires open_access_pdf_url"
+    result = await pipeline.ingest_pdf_from_url(
+        session_id=session_id,
+        pdf_url=meta.open_access_pdf_url,
+        title_hint=meta.title,
+        abstract_hint=meta.abstract or "",
+        authors_hint=list(meta.authors),
+        year_hint=meta.year,
+    )
+    return AddResult(
+        paper_content_id=result.paper_content_id,
+        papers_id=result.papers_id,
+        cache_hit=result.cache_hit,
+        title=result.title,
+    )
 
 
 async def add_paper_to_session_dispatch(
-    *,
     paper_id: str,
-    reason: str,  # noqa: ARG001 — surfaced in trace at the call site
+    *,
     pipeline: PaperPipeline,
     conn: aiosqlite.Connection,
     session_id: int,
 ) -> AddResult:
-    """``paper_id`` discriminator: 'arxiv:<id>' triggers ingest; 'library:<int>'
-    skips ingest and just inserts a papers row referencing the existing
-    paper_content. Either path lands enabled=true (schema default)."""
+    """Resolve a prefixed paper_id and attach it to the session.
+
+    Invoked from:
+      - ``POST /papers`` when the user clicks "Add as reference"
+      - the chat endpoint's paper_search branch for ``finalize: true`` picks
+
+    NOT exposed to the LLM as a tool (v2.4 design: read-only agent).
+
+    Prefix discriminator:
+      - ``library:<paper_content_id>`` — cache-hit insert papers row
+      - ``arxiv:<arxiv_id>`` — full PaperPipeline ingest
+      - ``ss:<paperId>`` — SS metadata → arxiv path if externalIds.ArXiv,
+        else openAccessPdf.url PDF, else raises NoIngestibleSourceError
+    """
     if paper_id.startswith("library:"):
-        pcid = int(paper_id.removeprefix("library:"))
-        # Idempotent: ON CONFLICT (UNIQUE session_id+paper_content_id) → no-op,
-        # then SELECT the existing papers row.
-        await conn.execute(
-            "INSERT OR IGNORE INTO papers (session_id, paper_content_id) "
-            "VALUES (?, ?)",
-            (session_id, pcid),
-        )
-        await conn.commit()
-        async with conn.execute(
-            "SELECT p.id, pc.title FROM papers p "
-            "JOIN paper_content pc ON pc.id = p.paper_content_id "
-            "WHERE p.session_id = ? AND p.paper_content_id = ?",
-            (session_id, pcid),
-        ) as cur:
-            row = await cur.fetchone()
-        assert row is not None, "library paper not found"
-        return AddResult(
-            paper_content_id=pcid,
-            papers_id=int(row[0]),
-            cache_hit=True,
-            title=row[1] or "",
+        return await _attach_library(
+            paper_id.removeprefix("library:"),
+            conn=conn,
+            session_id=session_id,
         )
 
     if paper_id.startswith("arxiv:"):
-        arxiv_id = paper_id.removeprefix("arxiv:")
-        result = await pipeline.ingest(
-            IngestRequest(session_id=session_id, arxiv_id=arxiv_id)
-        )
-        return AddResult(
-            paper_content_id=result.paper_content_id,
-            papers_id=result.papers_id,
-            cache_hit=result.cache_hit,
-            title=result.title,
+        return await _attach_arxiv(
+            paper_id.removeprefix("arxiv:"),
+            pipeline=pipeline,
+            conn=conn,
+            session_id=session_id,
         )
 
+    if paper_id.startswith("ss:"):
+        ss_id = paper_id.removeprefix("ss:")
+        meta = await fetch_paper_metadata(ss_id)
+        if meta.arxiv_id:
+            # Arxiv path is cleaner (LaTeX source + arxiv: content_key).
+            return await _attach_arxiv(
+                meta.arxiv_id,
+                pipeline=pipeline,
+                conn=conn,
+                session_id=session_id,
+            )
+        if meta.open_access_pdf_url:
+            return await _attach_pdf(
+                meta, pipeline=pipeline, conn=conn, session_id=session_id,
+            )
+        raise NoIngestibleSourceError(paper_id=paper_id, title=meta.title)
+
     raise ValueError(
-        f"add_paper_to_session: unrecognised paper_id prefix in {paper_id!r}"
+        f"add_paper_to_session: unrecognised paper_id prefix in {paper_id!r}",
     )

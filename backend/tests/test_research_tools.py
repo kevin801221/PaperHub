@@ -1,12 +1,15 @@
-"""Tests for research_tools dispatchers (SRS v2.3, FR-07)."""
+"""Tests for research_tools dispatchers (SRS v2.4, FR-07)."""
 from __future__ import annotations
 
+import inspect
 from unittest.mock import AsyncMock, MagicMock
 
 import aiosqlite
 import pytest
 
 from paperhub.agents.research_tools import (
+    TOOL_SCHEMAS,
+    NoIngestibleSourceError,
     _to_fts5_query,
     add_paper_to_session_dispatch,
     search_library_dispatch,
@@ -16,6 +19,7 @@ from paperhub.pipelines.paper_pipeline import (
     IngestResult,
     PaperPipeline,
 )
+from paperhub.pipelines.semantic_scholar import SemanticScholarMetadata
 
 pytestmark = pytest.mark.asyncio
 
@@ -109,15 +113,13 @@ async def test_add_paper_library_is_idempotent(
     pipeline = MagicMock(spec=PaperPipeline)
 
     r1 = await add_paper_to_session_dispatch(
-        paper_id=f"library:{pcid}",
-        reason="test reason",
+        f"library:{pcid}",
         pipeline=pipeline,
         conn=migrated_db,
         session_id=session_id,
     )
     r2 = await add_paper_to_session_dispatch(
-        paper_id=f"library:{pcid}",
-        reason="test reason again",
+        f"library:{pcid}",
         pipeline=pipeline,
         conn=migrated_db,
         session_id=session_id,
@@ -153,8 +155,7 @@ async def test_add_paper_arxiv_calls_pipeline_ingest(
     )
 
     result = await add_paper_to_session_dispatch(
-        paper_id="arxiv:2403.12345",
-        reason="best match",
+        "arxiv:2403.12345",
         pipeline=pipeline,
         conn=migrated_db,
         session_id=session_id,
@@ -180,12 +181,167 @@ async def test_add_paper_unrecognised_prefix_raises(
     pipeline = MagicMock(spec=PaperPipeline)
     with pytest.raises(ValueError, match="unrecognised paper_id prefix"):
         await add_paper_to_session_dispatch(
-            paper_id="garbage:1",
-            reason="x",
+            "garbage:1",
             pipeline=pipeline,
             conn=migrated_db,
             session_id=1,
         )
+
+
+# ---------------------------------------------------------------------------
+# v2.4-5: LLM palette guardrails — search_arxiv + add_paper_to_session are
+# removed; search_semantic_scholar is added.
+# ---------------------------------------------------------------------------
+
+
+def _schema_names() -> set[str]:
+    return {s["function"]["name"] for s in TOOL_SCHEMAS}
+
+
+def test_search_arxiv_not_in_tool_schemas() -> None:
+    assert "search_arxiv" not in _schema_names()
+
+
+def test_add_paper_to_session_not_in_tool_schemas() -> None:
+    """v2.4 invariant: agent has no write tool."""
+    assert "add_paper_to_session" not in _schema_names()
+
+
+def test_search_semantic_scholar_in_tool_schemas() -> None:
+    names = _schema_names()
+    assert "search_semantic_scholar" in names
+
+
+def test_tool_schemas_v2_4_palette_exact() -> None:
+    """The LLM-visible palette contains exactly three entries (defensive)."""
+    assert _schema_names() == {
+        "search_library",
+        "search_semantic_scholar",
+        "find_related_papers",
+    }
+
+
+def test_add_paper_to_session_dispatch_signature_no_reason_param() -> None:
+    """Drop of ``reason`` is part of the suggest-only design — the only
+    callers (POST /papers + chat-endpoint auto-attach) have no reason."""
+    sig = inspect.signature(add_paper_to_session_dispatch)
+    assert "reason" not in sig.parameters, (
+        f"Expected no 'reason' parameter, got: {list(sig.parameters)}"
+    )
+
+
+async def test_add_paper_to_session_dispatch_ss_with_arxiv_prefers_arxiv_path(
+    migrated_db: aiosqlite.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ss:<paperId> + SS metadata has externalIds.ArXiv → arxiv path."""
+    session_id = await _make_session(migrated_db)
+    pipeline = MagicMock(spec=PaperPipeline)
+    pipeline.ingest = AsyncMock(
+        return_value=IngestResult(
+            paper_content_id=42, papers_id=7, cache_hit=False, title="A Paper",
+        ),
+    )
+    pipeline.ingest_pdf_from_url = AsyncMock()
+
+    async def _fake_meta(paper_id: str) -> SemanticScholarMetadata:
+        return SemanticScholarMetadata(
+            paperId=paper_id,
+            title="A Paper",
+            abstract="abs",
+            year=2024,
+            authors=["A"],
+            arxiv_id="2401.99999",
+            open_access_pdf_url="https://example.org/x.pdf",  # should NOT be used
+        )
+
+    monkeypatch.setattr(
+        "paperhub.agents.research_tools.fetch_paper_metadata", _fake_meta,
+    )
+
+    result = await add_paper_to_session_dispatch(
+        "ss:abcd1234",
+        pipeline=pipeline,
+        conn=migrated_db,
+        session_id=session_id,
+    )
+    pipeline.ingest.assert_awaited_once()
+    pipeline.ingest_pdf_from_url.assert_not_called()
+    assert result.paper_content_id == 42
+
+
+async def test_add_paper_to_session_dispatch_ss_falls_back_to_pdf(
+    migrated_db: aiosqlite.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ss:<paperId> + no arXiv + openAccessPdf.url → PDF download path."""
+    session_id = await _make_session(migrated_db)
+    pipeline = MagicMock(spec=PaperPipeline)
+    pipeline.ingest = AsyncMock()
+    pipeline.ingest_pdf_from_url = AsyncMock(
+        return_value=IngestResult(
+            paper_content_id=43, papers_id=8, cache_hit=False, title="A PDF",
+        ),
+    )
+
+    async def _fake_meta(paper_id: str) -> SemanticScholarMetadata:
+        return SemanticScholarMetadata(
+            paperId=paper_id,
+            title="A PDF",
+            abstract="abs",
+            year=2024,
+            authors=["B"],
+            arxiv_id=None,
+            open_access_pdf_url="https://example.org/x.pdf",
+        )
+
+    monkeypatch.setattr(
+        "paperhub.agents.research_tools.fetch_paper_metadata", _fake_meta,
+    )
+
+    result = await add_paper_to_session_dispatch(
+        "ss:noarxiv",
+        pipeline=pipeline,
+        conn=migrated_db,
+        session_id=session_id,
+    )
+    pipeline.ingest.assert_not_called()
+    pipeline.ingest_pdf_from_url.assert_awaited_once()
+    assert result.title == "A PDF"
+
+
+async def test_add_paper_to_session_dispatch_ss_raises_NoIngestibleSourceError_when_no_source(
+    migrated_db: aiosqlite.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ss:<paperId> + no arXiv + no openAccessPdf.url → NoIngestibleSourceError."""
+    session_id = await _make_session(migrated_db)
+    pipeline = MagicMock(spec=PaperPipeline)
+
+    async def _fake_meta(paper_id: str) -> SemanticScholarMetadata:
+        return SemanticScholarMetadata(
+            paperId=paper_id,
+            title="No Source",
+            abstract="abs",
+            year=2024,
+            authors=[],
+            arxiv_id=None,
+            open_access_pdf_url=None,
+        )
+
+    monkeypatch.setattr(
+        "paperhub.agents.research_tools.fetch_paper_metadata", _fake_meta,
+    )
+
+    with pytest.raises(NoIngestibleSourceError) as exc_info:
+        await add_paper_to_session_dispatch(
+            "ss:nosrc",
+            pipeline=pipeline,
+            conn=migrated_db,
+            session_id=session_id,
+        )
+    assert exc_info.value.paper_id == "ss:nosrc"
+    assert exc_info.value.title == "No Source"
 
 
 # ---------------------------------------------------------------------------
