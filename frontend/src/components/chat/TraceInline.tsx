@@ -65,7 +65,6 @@ export function TraceArgs({
     );
   }
 
-  const knownKeysRendered = new Set<string>(["reason"]);
   const reasonVal = parsed["reason"];
 
   // Build unknown-keys fallback object
@@ -83,7 +82,6 @@ export function TraceArgs({
       )}
       {ARGS_KNOWN_KEYS.map((k) => {
         if (!(k in parsed)) return null;
-        knownKeysRendered.add(k);
         const v = parsed[k];
         return (
           <div key={k}>
