@@ -156,9 +156,9 @@ async def toggle_enabled(papers_id: int, body: PatchBody) -> dict[str, bool]:
             "UPDATE papers SET enabled = ? WHERE id = ?",
             (1 if body.enabled else 0, papers_id),
         )
-        await conn.commit()
         if cur.rowcount == 0:
             raise HTTPException(404, f"papers row {papers_id} not found")
+        await conn.commit()
     return {"enabled": body.enabled}
 
 
@@ -170,9 +170,9 @@ async def remove_from_session(papers_id: int) -> None:
     settings = load_settings()
     async with open_db(settings.db_path) as conn:
         cur = await conn.execute("DELETE FROM papers WHERE id = ?", (papers_id,))
-        await conn.commit()
         if cur.rowcount == 0:
             raise HTTPException(404, f"papers row {papers_id} not found")
+        await conn.commit()
 
 
 @router.get("/content/{paper_content_id}/html")

@@ -374,3 +374,30 @@ async def test_get_html_404_when_missing(
         r = await client.get("/papers/content/9999/html")
 
     assert r.status_code == 404
+
+
+async def test_get_html_410_when_file_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If html_path is set on a paper_content row but the file has been deleted,
+    GET /papers/content/{id}/html returns 410 Gone (not 404)."""
+    db_path = await _get_db_path(tmp_path, monkeypatch)
+
+    # Seed paper_content with html_path pointing to a path that doesn't exist on disk.
+    missing_path = tmp_path / "does-not-exist.html"
+    async with aiosqlite.connect(db_path) as conn:
+        await apply_schema(conn)
+        paper_content_id = await _seed_paper_content(
+            conn,
+            content_key="arxiv:1706.03762",
+            title="Attention Is All You Need",
+            arxiv_id="1706.03762",
+            html_path=str(missing_path),
+        )
+
+    app = create_app()
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.get(f"/papers/content/{paper_content_id}/html")
+
+    assert r.status_code == 410
