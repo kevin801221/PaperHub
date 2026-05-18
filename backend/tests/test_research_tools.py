@@ -234,7 +234,11 @@ async def test_add_paper_to_session_dispatch_ss_with_arxiv_prefers_arxiv_path(
     migrated_db: aiosqlite.Connection,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ss:<paperId> + SS metadata has externalIds.ArXiv → arxiv path."""
+    """ss:<paperId> + SS metadata has externalIds.ArXiv → arxiv path.
+
+    Additionally asserts that _lookup_arxiv_metadata is NOT called (SS
+    metadata is passed via metadata_override — fix for the 429 bug).
+    """
     session_id = await _make_session(migrated_db)
     pipeline = MagicMock(spec=PaperPipeline)
     pipeline.ingest = AsyncMock(
@@ -243,6 +247,10 @@ async def test_add_paper_to_session_dispatch_ss_with_arxiv_prefers_arxiv_path(
         ),
     )
     pipeline.ingest_pdf_from_url = AsyncMock()
+    # Attach a spy so we can assert _lookup_arxiv_metadata is NOT invoked.
+    pipeline._lookup_arxiv_metadata = MagicMock(
+        side_effect=AssertionError("_lookup_arxiv_metadata must not be called when SS metadata is provided"),
+    )
 
     async def _fake_meta(paper_id: str) -> SemanticScholarMetadata:
         return SemanticScholarMetadata(
@@ -267,6 +275,15 @@ async def test_add_paper_to_session_dispatch_ss_with_arxiv_prefers_arxiv_path(
     )
     pipeline.ingest.assert_awaited_once()
     pipeline.ingest_pdf_from_url.assert_not_called()
+    # Verify that the IngestRequest carries the metadata_override so
+    # PaperPipeline.ingest can skip _lookup_arxiv_metadata.
+    call_args = pipeline.ingest.await_args
+    assert call_args is not None
+    sent: IngestRequest = call_args.args[0]
+    assert sent.metadata_override is not None
+    assert sent.metadata_override.title == "A Paper"
+    assert sent.metadata_override.abstract == "abs"
+    assert sent.metadata_override.year == 2024
     assert result.paper_content_id == 42
 
 

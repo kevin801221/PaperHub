@@ -21,7 +21,7 @@ from typing import Any
 import aiosqlite
 
 from paperhub.pipelines.arxiv_client import search_arxiv as _search_arxiv_sync
-from paperhub.pipelines.paper_pipeline import IngestRequest, PaperPipeline
+from paperhub.pipelines.paper_pipeline import ArxivMetadata, IngestRequest, PaperPipeline
 from paperhub.pipelines.semantic_scholar import (
     Mode,
     SemanticScholarMetadata,
@@ -389,9 +389,14 @@ async def _attach_arxiv(
     pipeline: PaperPipeline,
     conn: aiosqlite.Connection,  # noqa: ARG001 — pipeline owns the conn
     session_id: int,
+    metadata_override: ArxivMetadata | None = None,
 ) -> AddResult:
     result = await pipeline.ingest(
-        IngestRequest(session_id=session_id, arxiv_id=arxiv_id),
+        IngestRequest(
+            session_id=session_id,
+            arxiv_id=arxiv_id,
+            metadata_override=metadata_override,
+        ),
     )
     return AddResult(
         paper_content_id=result.paper_content_id,
@@ -466,11 +471,22 @@ async def add_paper_to_session_dispatch(
         meta = await fetch_paper_metadata(ss_id)
         if meta.arxiv_id:
             # Arxiv path is cleaner (LaTeX source + arxiv: content_key).
+            # Pass SS metadata directly so _ingest_arxiv skips the arXiv
+            # metadata API call — avoiding the redundant 2nd hit (hit #1 of
+            # the 3-hit 429 bug).  The source URL (hit #2) is now also built
+            # deterministically in download_arxiv_source, so only one real
+            # HTTP request reaches arxiv.org (the tarball GET, hit #3).
             return await _attach_arxiv(
                 meta.arxiv_id,
                 pipeline=pipeline,
                 conn=conn,
                 session_id=session_id,
+                metadata_override=ArxivMetadata(
+                    title=meta.title,
+                    abstract=meta.abstract or "",
+                    authors=list(meta.authors),
+                    year=meta.year,
+                ),
             )
         if meta.open_access_pdf_url:
             return await _attach_pdf(

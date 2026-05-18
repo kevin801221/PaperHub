@@ -72,12 +72,16 @@ def download_arxiv_source(arxiv_id: str, *, cache_root: Path) -> Path:
     source_dir = target_dir / "source"
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # Locate the source-tarball URL via the arxiv metadata query.
-    search = arxiv.Search(id_list=[arxiv_id])
-    result = next(iter(_client.results(search)))
-    src_url = result.source_url()
-    if src_url is None:
-        raise RuntimeError(f"arxiv result {arxiv_id!r} has no source URL")
+    # Build the source URL directly from the arxiv_id.  The URL is
+    # deterministic: https://arxiv.org/src/<arxiv_id>.
+    # Previously this called _client.results() to invoke Result.source_url(),
+    # but that method just builds the same URL by substituting "/pdf/" →
+    # "/src/" in the PDF URL.  Calling the arXiv metadata API here is a
+    # redundant round-trip (and a second hit on top of the one already made
+    # by _lookup_arxiv_metadata), which triggers arXiv's per-IP rate limit
+    # (HTTP 429) when ingesting an SS-sourced paper that already resolved
+    # metadata from Semantic Scholar.
+    src_url = f"https://arxiv.org/src/{arxiv_id}"
 
     # Fetch the tarball. arxiv 4.0 removed Result.download_source() — see
     # arxiv/__init__.py: source_url derives from pdf_url by swapping

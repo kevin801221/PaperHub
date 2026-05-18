@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -35,11 +35,28 @@ _PDF_USER_AGENT = "PaperHub/0.1 (https://github.com/whats2000/PaperHub)"
 
 
 @dataclass(frozen=True)
+class ArxivMetadata:
+    """Caller-supplied metadata that skips the arXiv API lookup.
+
+    Used by the ``ss:`` dispatcher branch in research_tools to pass
+    Semantic Scholar metadata through so ``_ingest_arxiv`` never needs
+    to hit the arXiv metadata API (hit #1 in the 3-hit rate-limit bug).
+    The field names match the dict produced by ``_lookup_arxiv_metadata``.
+    """
+
+    title: str
+    abstract: str
+    authors: list[str]
+    year: int | None
+
+
+@dataclass(frozen=True)
 class IngestRequest:
     session_id: int
     arxiv_id: str | None = None
     upload_path: Path | None = None
     upload_kind: Literal["pdf", "latex"] | None = None  # if upload_path is set
+    metadata_override: ArxivMetadata | None = None  # skip arXiv metadata API when set
 
 
 @dataclass(frozen=True)
@@ -183,8 +200,14 @@ class PaperPipeline:
         html_path = cache_dir / "source.html"
         render_html(source=source_path, kind="latex", out_path=html_path)
 
-        # Metadata (sync — see module docstring).
-        metadata = self._lookup_arxiv_metadata(arxiv_id)
+        # Metadata: use caller-supplied override when available (avoids an
+        # arXiv API round-trip when the caller already has metadata from
+        # Semantic Scholar).  Fall back to the arXiv API otherwise.
+        metadata: dict[str, object] = (
+            asdict(req.metadata_override)
+            if req.metadata_override is not None
+            else self._lookup_arxiv_metadata(arxiv_id)
+        )
 
         # Chunk + embed.
         chunks = chunk_text(full_text)
