@@ -2083,60 +2083,23 @@ git commit -m "feat(chat): TraceInline collapsible step list with error + reject
 - Create: `frontend/src/components/chat/Composer.tsx`
 - Create: `frontend/tests/components/Composer.test.tsx`
 
+**UX-first polish (UX #1, #2, #3 — landed in `feat(chat): Enter-sends composer with embedded send + capability action bar`):**
+- **Keymap inverted**: plain Enter submits; Shift+Enter inserts newline. Ctrl/Cmd+Enter removed.
+- **Embedded send button**: ghost icon-only `<Button>` absolutely positioned inside the textarea (`pr-12` reserves space). Disabled when input is empty.
+- **Capability action bar**: four disabled ghost chips (Attach paper / References / Slides / Compare) with Tooltips below the textarea, each explaining when the feature lands.
+- **Composer draft from store**: `composerDraft` / `setComposerDraft` in `useChatStore` — allows EmptyState prompt cards to prefill the composer.
+- Placeholder updated to: `"Ask about a paper, search, or just chat… (Enter to send, Shift+Enter for new line)"`
+
 - [ ] **Step 1: Write the failing test.**
 
-`frontend/tests/components/Composer.test.tsx`:
-
-```tsx
-import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
-
-import { Composer } from "@/components/chat/Composer";
-
-describe("Composer", () => {
-  it("submits via the send button", async () => {
-    const onSubmit = vi.fn();
-    render(<Composer onSubmit={onSubmit} disabled={false} />);
-    await userEvent.type(screen.getByRole("textbox"), "hello world");
-    await userEvent.click(screen.getByRole("button", { name: /send/i }));
-    expect(onSubmit).toHaveBeenCalledWith("hello world");
-  });
-
-  it("submits via Ctrl+Enter", async () => {
-    const onSubmit = vi.fn();
-    render(<Composer onSubmit={onSubmit} disabled={false} />);
-    await userEvent.type(
-      screen.getByRole("textbox"),
-      "hi{Control>}{Enter}{/Control}",
-    );
-    expect(onSubmit).toHaveBeenCalledWith("hi");
-  });
-
-  it("disables the send button when disabled prop is true", () => {
-    render(<Composer onSubmit={() => {}} disabled={true} />);
-    expect(screen.getByRole("button", { name: /send/i })).toBeDisabled();
-  });
-
-  it("does not submit empty / whitespace input", async () => {
-    const onSubmit = vi.fn();
-    render(<Composer onSubmit={onSubmit} disabled={false} />);
-    await userEvent.click(screen.getByRole("button", { name: /send/i }));
-    await userEvent.type(screen.getByRole("textbox"), "   ");
-    await userEvent.click(screen.getByRole("button", { name: /send/i }));
-    expect(onSubmit).not.toHaveBeenCalled();
-  });
-
-  it("clears the textarea after submit", async () => {
-    const onSubmit = vi.fn();
-    render(<Composer onSubmit={onSubmit} disabled={false} />);
-    const textbox = screen.getByRole<HTMLTextAreaElement>("textbox");
-    await userEvent.type(textbox, "hello");
-    await userEvent.click(screen.getByRole("button", { name: /send/i }));
-    expect(textbox.value).toBe("");
-  });
-});
-```
+`frontend/tests/components/Composer.test.tsx` — 7 tests:
+- submits via the send button
+- submits via plain Enter (no modifier)
+- Shift+Enter inserts newline, does NOT submit
+- disables the send button when disabled prop is true
+- does not submit empty / whitespace input
+- clears the textarea after submit
+- renders 4 disabled capability action bar buttons with correct labels
 
 - [ ] **Step 2: Implement.**
 
@@ -2222,21 +2185,18 @@ git commit -m "feat(chat): Composer with Ctrl+Enter submit + a11y refocus + disa
 - Create: `frontend/src/components/states/LoadingDots.tsx`
 - Create: `frontend/src/components/states/RejectionPill.tsx`
 
+**UX-first polish (UX #7 — landed in `feat(chat): example prompts + retry + copy on assistant messages`):**
+- `EmptyState` replaced with 4 clickable prompt cards (Search / BookOpen / Presentation / BarChart3 icons) in a 1–2 column grid. Clicking a card calls `setComposerDraft` to prefill the Composer without submitting.
+- Tests added: `tests/components/EmptyState.test.tsx` (3 tests).
+
 - [ ] **Step 1: Write the three inline state components.**
 
-`frontend/src/components/states/EmptyState.tsx`:
+`frontend/src/components/states/EmptyState.tsx` — **as-shipped (UX #7 version)**:
 
 ```tsx
-import { MessageSquare } from "lucide-react";
-
-export function EmptyState() {
-  return (
-    <div className="flex flex-1 flex-col items-center justify-center text-muted-foreground gap-3">
-      <MessageSquare className="h-12 w-12" />
-      <p className="text-sm">Start a conversation. Try: "What can you help me with?"</p>
-    </div>
-  );
-}
+import { MessageSquare, Search, BookOpen, Presentation, BarChart3 } from "lucide-react";
+import { useChatStore } from "@/store/chat";
+// 4 PROMPTS array + grid of <button> cards, each calling setDraft(prompt)
 ```
 
 `frontend/src/components/states/LoadingDots.tsx`:
@@ -2370,6 +2330,9 @@ git commit -m "feat(chat): ChatThread with a11y (aria-live) + reduced-motion scr
 **Files:**
 - Create: `frontend/src/pages/ChatPage.tsx`
 - Modify: `frontend/src/App.tsx`
+
+**UX-first polish (UX #12 — landed in `feat(frontend): tri-state theme + collapsible sidebar + global shortcuts`):**
+- `useGlobalShortcuts()` mounted at the top of `ChatPage` — provides Ctrl+K, Ctrl+/, Ctrl+Shift+L, Esc.
 
 - [ ] **Step 1: Write `ChatPage.tsx`.**
 
@@ -2679,17 +2642,34 @@ git commit -m "docs(frontend): document quality gates (25 tests) + update CLAUDE
 
 ## Done state
 
-After Task 15:
+After Task 15 + UX-first polish pass (4 feat commits):
 
-- `cd frontend; npm test` — 25 Vitest tests pass (3 store + 2 ThemeToggle + 3 useChatStream + 5 MessageBubble + 3 RoutingBadge + 4 TraceInline + 5 Composer).
+- `cd frontend; npm test` — **48 Vitest tests pass** (12 store + 2 ThemeToggle + 3 useChatStream + 11 MessageBubble + 3 RoutingBadge + 4 TraceInline + 7 Composer + 3 EmptyState + 3 useGlobalShortcuts).
 - `cd frontend; npm run typecheck` — tsc strict clean.
 - `cd frontend; npm run lint` — ESLint v9 flat config clean.
 - `cd frontend; npm run build` — Vite 8 production build succeeds.
 - `cd backend; uv run pytest` — all backend tests pass (including the new CORS preflight test).
 - `.\scripts\smoke_e2e.ps1` — boots both servers, polls `/health`, POSTs to `/chat`, asserts `tool_step >= 2`, `routing_decision`, `token >= 1`, `final` events all arrived, final content matches `PAPERHUB_CHITCHAT_MOCK`. Exits 0 on success.
-- Theme toggle works; system preference is honored on first load via `next-themes`.
+- Theme toggle cycles Light → Dark → System (tri-state) with Monitor icon; tooltip shows current state.
 - All four NFR-02 states reachable: EmptyState renders by default, streaming animation while tokens arrive (respects `prefers-reduced-motion`), RejectionPill available for future rejection-status traces, error toast fires on pre-event transport failure (inline error on mid-stream failures).
 - No Citation Canvas, no Reference Sources panel, no Search Results, no Compare view — Plans D / G remain to land.
+
+### UX-first polish tasks (landed on `feat/plan-b-frontend-foundation`)
+
+| Finding | Feature | Commit |
+|---|---|---|
+| #1 | Enter sends, Shift+Enter newline | `feat(chat): Enter-sends composer…` |
+| #2 | Embedded icon-only send button | `feat(chat): Enter-sends composer…` |
+| #3 | Capability action bar (4 disabled chips + tooltips) | `feat(chat): Enter-sends composer…` |
+| #4 | Auto-derive session title from first user message | `feat(chat): session lifecycle…` |
+| #5 | Delete session with 5 s Undo toast | `feat(chat): session lifecycle…` |
+| #6 | localStorage persist via zustand/middleware (key: `paperhub-chat-v1`) | `feat(chat): session lifecycle…` |
+| #7 | EmptyState with 4 clickable prompt cards | `feat(chat): example prompts…` |
+| #8 | Retry button on errored assistant bubbles | `feat(chat): example prompts…` |
+| #9 | Copy button (hover-revealed) on completed assistant bubbles | `feat(chat): example prompts…` |
+| #10 | Tri-state ThemeToggle (Light → Dark → System) | `feat(frontend): tri-state theme…` |
+| #11 | Collapsible sidebar (56 px rail / 260 px expanded) | `feat(frontend): tri-state theme…` |
+| #12 | Global shortcuts: Ctrl+K, Ctrl+/, Ctrl+Shift+L, Esc | `feat(frontend): tri-state theme…` |
 
 ---
 
