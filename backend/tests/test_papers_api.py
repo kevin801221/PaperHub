@@ -9,12 +9,13 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import aiosqlite
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+import paperhub.api.papers as papers_mod
 from paperhub.app import create_app
 from paperhub.db.migrate import apply_schema
 from paperhub.pipelines.paper_pipeline import IngestResult
@@ -811,3 +812,170 @@ async def test_post_papers_legacy_body_without_metadata_still_works(
     assert r.json()["title"] == "GPT-3"
     assert len(captured_req) == 1
     assert captured_req[0].metadata_override is None
+
+
+# ---------------------------------------------------------------------------
+# DELETE /papers/content/{id} — test-friendly library purge
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_library_paper_succeeds_when_no_sessions_reference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No `papers` rows reference the paper_content → 204 + row deleted."""
+    db_path = await _get_db_path(tmp_path, monkeypatch)
+    async with aiosqlite.connect(db_path) as conn:
+        await apply_schema(conn)
+        pc_id = await _seed_paper_content(
+            conn, content_key="arxiv:2510.03293", title="MoE Paper",
+            arxiv_id="2510.03293",
+        )
+
+    fake_chroma = MagicMock()
+    with patch.object(papers_mod, "get_chroma", return_value=fake_chroma):
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.delete(f"/papers/content/{pc_id}")
+
+    assert r.status_code == 204
+    fake_chroma.delete_paper.assert_called_once_with(pc_id)
+
+    async with aiosqlite.connect(db_path) as conn:
+        async with conn.execute(
+            "SELECT COUNT(*) FROM paper_content WHERE id = ?", (pc_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None and row[0] == 0
+
+
+async def test_delete_library_paper_returns_409_when_in_use_and_no_force(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At least one `papers` row references it → 409 with session_count."""
+    db_path = await _get_db_path(tmp_path, monkeypatch)
+    async with aiosqlite.connect(db_path) as conn:
+        await apply_schema(conn)
+        session_id = await _seed_session(conn)
+        pc_id = await _seed_paper_content(
+            conn, content_key="arxiv:1706.03762", title="Attention",
+            arxiv_id="1706.03762",
+        )
+        await _seed_papers_row(
+            conn, session_id=session_id, paper_content_id=pc_id,
+        )
+
+    with patch.object(papers_mod, "get_chroma", return_value=MagicMock()):
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.delete(f"/papers/content/{pc_id}")
+
+    assert r.status_code == 409
+    body = r.json()
+    assert body["detail"]["error"] == "in_use_by_sessions"
+    assert body["detail"]["session_count"] == 1
+
+    async with aiosqlite.connect(db_path) as conn:
+        async with conn.execute(
+            "SELECT COUNT(*) FROM paper_content WHERE id = ?", (pc_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        assert row is not None and row[0] == 1
+
+
+async def test_delete_library_paper_with_force_cascades_membership(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`?force=true` deletes papers rows + paper_content + cleans Chroma."""
+    db_path = await _get_db_path(tmp_path, monkeypatch)
+    async with aiosqlite.connect(db_path) as conn:
+        await apply_schema(conn)
+        s1 = await _seed_session(conn)
+        s2 = await _seed_session(conn)
+        pc_id = await _seed_paper_content(
+            conn, content_key="arxiv:2310.04444", title="Survey",
+            arxiv_id="2310.04444",
+        )
+        await _seed_papers_row(conn, session_id=s1, paper_content_id=pc_id)
+        await _seed_papers_row(conn, session_id=s2, paper_content_id=pc_id)
+
+    fake_chroma = MagicMock()
+    with patch.object(papers_mod, "get_chroma", return_value=fake_chroma):
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.delete(f"/papers/content/{pc_id}?force=true")
+
+    assert r.status_code == 204
+    fake_chroma.delete_paper.assert_called_once_with(pc_id)
+
+    async with aiosqlite.connect(db_path) as conn:
+        async with conn.execute(
+            "SELECT COUNT(*) FROM paper_content WHERE id = ?", (pc_id,),
+        ) as cur:
+            pc_count = await cur.fetchone()
+        async with conn.execute(
+            "SELECT COUNT(*) FROM papers WHERE paper_content_id = ?", (pc_id,),
+        ) as cur:
+            membership_count = await cur.fetchone()
+    assert pc_count is not None and pc_count[0] == 0
+    assert membership_count is not None and membership_count[0] == 0
+
+
+async def test_delete_library_paper_returns_404_when_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db_path = await _get_db_path(tmp_path, monkeypatch)
+    async with aiosqlite.connect(db_path) as conn:
+        await apply_schema(conn)
+
+    with patch.object(papers_mod, "get_chroma", return_value=MagicMock()):
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.delete("/papers/content/9999")
+
+    assert r.status_code == 404
+    assert "9999" in r.json()["detail"]
+
+
+async def test_delete_library_paper_cleans_on_disk_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """source_dir_path's parent (the cache dir) is rmtreed best-effort."""
+    db_path = await _get_db_path(tmp_path, monkeypatch)
+    cache_dir = tmp_path / "papers_cache" / "arxiv" / "2510.03293"
+    source_dir = cache_dir / "source"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    (source_dir / "main.tex").write_text("placeholder", encoding="utf-8")
+    (cache_dir / "source.html").write_text("<html></html>", encoding="utf-8")
+
+    async with aiosqlite.connect(db_path) as conn:
+        await apply_schema(conn)
+        await conn.execute(
+            "INSERT INTO paper_content "
+            "(content_key, kind, arxiv_id, title, authors_json, year, abstract, "
+            " source_path, source_dir_path, html_path) "
+            "VALUES (?, 'arxiv', ?, ?, '[]', ?, ?, ?, ?, ?)",
+            (
+                "arxiv:2510.03293", "2510.03293", "MoE Paper", 2024, "abstract",
+                str(source_dir / "main.tex"),
+                str(source_dir),
+                str(cache_dir / "source.html"),
+            ),
+        )
+        await conn.commit()
+        async with conn.execute("SELECT last_insert_rowid()") as cur:
+            row = await cur.fetchone()
+        assert row is not None
+        pc_id = int(row[0])
+
+    with patch.object(papers_mod, "get_chroma", return_value=MagicMock()):
+        app = create_app()
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            r = await client.delete(f"/papers/content/{pc_id}")
+
+    assert r.status_code == 204
+    assert not cache_dir.exists(), "cache dir should be rmtreed"

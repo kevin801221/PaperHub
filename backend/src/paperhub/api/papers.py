@@ -2,6 +2,8 @@
 gestures; the Research Agent uses research_tools dispatchers instead."""
 from __future__ import annotations
 
+import logging
+import shutil
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -17,6 +19,8 @@ from paperhub.api.deps import get_chroma
 from paperhub.config import load_settings
 from paperhub.db.connection import open_db
 from paperhub.pipelines.paper_pipeline import ArxivMetadata, PaperPipeline
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 
@@ -300,6 +304,92 @@ async def serve_html(paper_content_id: int) -> FileResponse:
     if not path.is_file():  # noqa: ASYNC240
         raise HTTPException(410, f"html_path on disk missing: {path}")
     return FileResponse(path, media_type="text/html")
+
+
+@router.delete("/content/{paper_content_id}", status_code=204)
+async def delete_library_paper(
+    paper_content_id: int,
+    request: Request,
+    force: bool = Query(
+        False, description="If true, also remove any papers (session-membership) rows referencing this paper_content."
+    ),
+) -> None:
+    """Purge a paper from the library entirely — paper_content row, chunks
+    (cascade), Chroma vectors, and the on-disk cache directory.
+
+    Test-friendly destructive endpoint. The proper UX (with batch ops,
+    cascading session warnings, and probably an undo window) belongs in a
+    later phase when user-driven uploads land. For now this is the smallest
+    surface that lets a tester wipe a bad ingest and re-attach cleanly.
+
+    Without `?force=true`, refuses (409) if any session still references the
+    paper — operators must DELETE /papers/{papers_id} first OR pass force.
+    With force, the dispatcher cascade-deletes membership rows itself
+    (schema is ON DELETE RESTRICT on `papers.paper_content_id`).
+    """
+    settings = load_settings()
+    async with open_db(settings.db_path) as conn:
+        async with conn.execute(
+            "SELECT source_dir_path FROM paper_content WHERE id = ?",
+            (paper_content_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            raise HTTPException(
+                404, f"paper_content {paper_content_id} not found",
+            )
+        source_dir_path = row[0]
+
+        async with conn.execute(
+            "SELECT COUNT(*) FROM papers WHERE paper_content_id = ?",
+            (paper_content_id,),
+        ) as cur:
+            count_row = await cur.fetchone()
+        ref_count = int(count_row[0]) if count_row else 0
+
+        if ref_count > 0 and not force:
+            raise HTTPException(
+                409,
+                detail={
+                    "error": "in_use_by_sessions",
+                    "session_count": ref_count,
+                    "hint": "pass ?force=true to cascade-delete the memberships, or DELETE /papers/{papers_id} for each first.",
+                },
+            )
+
+        # Cascade membership rows when force is set (schema is RESTRICT).
+        if ref_count > 0:
+            await conn.execute(
+                "DELETE FROM papers WHERE paper_content_id = ?",
+                (paper_content_id,),
+            )
+
+        # chunks → ON DELETE CASCADE handles them when paper_content is removed.
+        await conn.execute(
+            "DELETE FROM paper_content WHERE id = ?", (paper_content_id,),
+        )
+        await conn.commit()
+
+    # Chroma vectors — best-effort; log on failure so DB stays consistent.
+    try:
+        chroma = get_chroma(request, settings)
+        chroma.delete_paper(paper_content_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "chroma delete failed for paper_content_id=%s: %s",
+            paper_content_id, exc,
+        )
+
+    # On-disk cache — best-effort.
+    if source_dir_path:
+        cache_dir = Path(source_dir_path).parent  # source_dir_path points at <cache>/source/
+        if cache_dir.exists() and cache_dir.is_dir():
+            try:
+                shutil.rmtree(cache_dir)
+            except OSError as exc:
+                logger.warning(
+                    "failed to remove cache dir %s: %s", cache_dir, exc,
+                )
 
 
 # Re-export Pydantic models for test introspection (kept here for locality).

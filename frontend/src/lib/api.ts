@@ -103,3 +103,37 @@ export async function createBackendSession(): Promise<number> {
   });
   return data.session_id;
 }
+
+/** Custom error thrown by deleteLibraryPaper when the paper is still attached
+ * to one or more sessions and force=false. The UI can read `session_count` to
+ * compose a confirmation prompt and retry with force=true. */
+export class PaperInUseByOtherSessions extends Error {
+  readonly session_count: number;
+  constructor(session_count: number) {
+    super(`paper is referenced by ${session_count} session(s)`);
+    this.name = "PaperInUseByOtherSessions";
+    this.session_count = session_count;
+  }
+}
+
+/** Purge a paper from the library entirely — paper_content row + chunks +
+ * Chroma vectors + on-disk cache. Destructive; test-friendly endpoint.
+ *
+ * @throws PaperInUseByOtherSessions on 409 (without force).
+ */
+export async function deleteLibraryPaper(
+  paperContentId: number,
+  force = false,
+): Promise<void> {
+  const url = `/papers/content/${paperContentId}${force ? "?force=true" : ""}`;
+  const res = await fetch(`${API_BASE_URL}${url}`, { method: "DELETE" });
+  if (res.status === 204) return;
+  if (res.status === 409) {
+    const body = (await res.json().catch(() => ({}))) as {
+      detail?: { session_count?: number };
+    };
+    throw new PaperInUseByOtherSessions(body.detail?.session_count ?? 0);
+  }
+  const text = await res.text().catch(() => "");
+  throw new Error(`API ${res.status}: ${text}`);
+}

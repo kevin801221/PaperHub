@@ -44,6 +44,14 @@ class ChromaStore:
             metadatas=[{"paper_content_id": paper_content_id} for _ in chunk_ids],
         )
 
+    def delete_paper(self, paper_content_id: int) -> None:
+        """Remove every chunk vector belonging to `paper_content_id`.
+
+        Used by `DELETE /papers/content/{id}` (test-friendly library purge).
+        No-op if no vectors exist for that paper.
+        """
+        self._coll.delete(where={"paper_content_id": paper_content_id})
+
     def search(
         self,
         *,
