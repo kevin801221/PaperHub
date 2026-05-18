@@ -172,7 +172,7 @@ export function Sidebar() {
             <>
               <div className="p-3">
                 <Button
-                  variant="default"
+                  variant="secondary"
                   className="w-full justify-start gap-2"
                   onClick={() => newSession()}
                 >
