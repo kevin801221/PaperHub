@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from paperhub.agents.chitchat import chitchat_stream
+from paperhub.agents.research import paper_qa_stream, paper_search
 from paperhub.agents.router import router_node
 from paperhub.agents.state import AgentState
 from paperhub.agents.stubs import stub_response
@@ -22,6 +23,9 @@ from paperhub.models.events import (
     RoutingDecisionEvent,
     TokenEvent,
 )
+from paperhub.pipelines.paper_pipeline import PaperPipeline
+from paperhub.rag.chroma import ChromaStore
+from paperhub.rag.retriever import Retriever
 from paperhub.tracing.tracer import Tracer
 
 router = APIRouter()
@@ -119,7 +123,7 @@ async def _drain_tool_calls_since(
 
 
 @router.post("/chat")
-async def chat_endpoint(req: ChatRequest, _request: Request) -> EventSourceResponse:  # noqa: ARG001
+async def chat_endpoint(req: ChatRequest, request: Request) -> EventSourceResponse:
     settings = load_settings()
     adapter = LiteLlmAdapter()
     router_mock = os.environ.get("PAPERHUB_ROUTER_MOCK")
@@ -170,6 +174,42 @@ async def chat_endpoint(req: ChatRequest, _request: Request) -> EventSourceRespo
                         yield {"event": "token",
                                "data": token_evt.model_dump_json(exclude={"type"})}
                     final_content = "".join(chunks)
+                elif intent == "paper_search":
+                    chroma = getattr(request.app.state, "chroma", None) or ChromaStore(
+                        settings.chroma_dir
+                    )
+                    pipeline = PaperPipeline(
+                        conn,
+                        papers_cache_dir=settings.papers_cache_dir,
+                        chroma=chroma,
+                    )
+                    final_content = await paper_search(
+                        state,
+                        adapter=adapter,
+                        tracer=tracer,
+                        model=settings.paper_qa_model,
+                        conn=conn,
+                        pipeline=pipeline,
+                    )
+                elif intent == "paper_qa":
+                    chroma = getattr(request.app.state, "chroma", None) or ChromaStore(
+                        settings.chroma_dir
+                    )
+                    retriever = Retriever(chroma=chroma)
+                    qa_chunks: list[str] = []
+                    async for token in paper_qa_stream(
+                        state,
+                        adapter=adapter,
+                        tracer=tracer,
+                        model=settings.paper_qa_model,
+                        retriever=retriever,
+                        conn=conn,
+                    ):
+                        qa_chunks.append(token)
+                        token_evt = TokenEvent(run_id=run_id, branch="", text=token)
+                        yield {"event": "token",
+                               "data": token_evt.model_dump_json(exclude={"type"})}
+                    final_content = "".join(qa_chunks)
                 else:
                     final_content = await stub_response(state, intent=intent)
 

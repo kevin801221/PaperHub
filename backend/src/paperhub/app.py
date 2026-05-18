@@ -8,6 +8,7 @@ from paperhub.api import chat, health
 from paperhub.config import load_settings
 from paperhub.db.connection import open_db
 from paperhub.db.migrate import apply_schema
+from paperhub.rag.chroma import ChromaStore
 
 
 @asynccontextmanager
@@ -16,7 +17,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.settings = settings
     async with open_db(settings.db_path) as conn:
         await apply_schema(conn)
+    # ChromaStore holds a PersistentClient; chromadb manages its own cleanup.
+    app.state.chroma = ChromaStore(settings.chroma_dir)
     yield
+    # Lifespan: chroma cleanup handled internally by chromadb.
 
 
 def create_app() -> FastAPI:
