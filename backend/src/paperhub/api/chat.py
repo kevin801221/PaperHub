@@ -22,8 +22,8 @@ from paperhub.models.events import (
     RoutingDecisionEvent,
     TokenEvent,
 )
+from paperhub.api.deps import get_chroma
 from paperhub.pipelines.paper_pipeline import PaperPipeline
-from paperhub.rag.chroma import ChromaStore
 from paperhub.rag.retriever import Retriever
 from paperhub.tracing.redactor import redact
 from paperhub.tracing.tracer import Tracer
@@ -174,13 +174,10 @@ async def chat_endpoint(req: ChatRequest, request: Request) -> EventSourceRespon
                                "data": token_evt.model_dump_json(exclude={"type"})}
                     final_content = "".join(chunks)
                 elif intent == "paper_search":
-                    chroma = getattr(request.app.state, "chroma", None) or ChromaStore(
-                        settings.chroma_dir
-                    )
                     pipeline = PaperPipeline(
                         conn,
                         papers_cache_dir=settings.papers_cache_dir,
-                        chroma=chroma,
+                        chroma=get_chroma(request, settings),
                     )
                     final_content = await paper_search(
                         state,
@@ -191,10 +188,7 @@ async def chat_endpoint(req: ChatRequest, request: Request) -> EventSourceRespon
                         pipeline=pipeline,
                     )
                 elif intent == "paper_qa":
-                    chroma = getattr(request.app.state, "chroma", None) or ChromaStore(
-                        settings.chroma_dir
-                    )
-                    retriever = Retriever(chroma=chroma)
+                    retriever = Retriever(chroma=get_chroma(request, settings))
                     qa_chunks: list[str] = []
                     final_content = ""
                     async for item in paper_qa_stream(

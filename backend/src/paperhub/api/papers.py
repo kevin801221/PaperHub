@@ -9,10 +9,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from paperhub.agents.research_tools import _to_fts5_query
+from paperhub.api.deps import get_chroma
 from paperhub.config import load_settings
 from paperhub.db.connection import open_db
 from paperhub.pipelines.paper_pipeline import IngestRequest, PaperPipeline
-from paperhub.rag.chroma import ChromaStore
 
 router = APIRouter(prefix="/papers", tags=["papers"])
 
@@ -51,14 +51,11 @@ async def ingest_paper(body: IngestBody, request: Request) -> IngestResponse:
     """Ingest a paper from arXiv. Cache-aware: second call with the same
     arxiv_id returns cache_hit=True immediately."""
     settings = load_settings()
-    chroma = getattr(request.app.state, "chroma", None) or ChromaStore(
-        settings.chroma_dir
-    )
     async with open_db(settings.db_path) as conn:
         pipeline = PaperPipeline(
             conn,
             papers_cache_dir=settings.papers_cache_dir,
-            chroma=chroma,
+            chroma=get_chroma(request, settings),
         )
         result = await pipeline.ingest(
             IngestRequest(session_id=body.session_id, arxiv_id=body.arxiv_id)
