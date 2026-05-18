@@ -18,6 +18,7 @@ class _StepBuffer:
     result: dict[str, Any] | None = None
     token_in: int | None = None
     token_out: int | None = None
+    forced_error: str | None = None
 
     def record_args(self, args: dict[str, Any]) -> None:
         self.args = args
@@ -28,6 +29,13 @@ class _StepBuffer:
     def record_tokens(self, *, token_in: int | None, token_out: int | None) -> None:
         self.token_in = token_in
         self.token_out = token_out
+
+    def mark_error(self, message: str) -> None:
+        """Record that the step is logically failed even if no exception
+        propagates out of the ``with`` block. Used by callers that catch
+        exceptions from a dispatched tool but still want the trace to
+        show the failure."""
+        self.forced_error = message
 
 
 class Tracer:
@@ -65,6 +73,8 @@ class Tracer:
                               started, status, error)
             raise
         else:
+            if buf.forced_error is not None:
+                status, error = "error", buf.forced_error
             await self._write(buf, index, agent, tool, model, parent_step,
                               started, status, error)
 

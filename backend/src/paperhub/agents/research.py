@@ -133,7 +133,7 @@ async def paper_search(
             async with tracer.step(
                 agent="research", tool=f"paper_search:{name}", model=None,
             ) as step:
-                step.record_args({**args, "reason": args.get("reason")})
+                step.record_args(args)
                 try:
                     if name == "search_library":
                         result = [
@@ -177,6 +177,7 @@ async def paper_search(
                 except Exception as exc:  # noqa: BLE001
                     result = {"error": str(exc), "tool": name}
                     step.record_result({"error": str(exc)})
+                    step.mark_error(str(exc))
 
             messages.append(
                 {
