@@ -1,4 +1,27 @@
-"""Research Agent: paper_search tool-calling loop (SRS v2.4) + paper_qa stream.
+"""Research Agent helpers (SRS v2.4): node bodies for the paper_search +
+paper_qa LangGraph subgraphs.
+
+This module hosts the **building blocks** the multi-node Research subgraph
+(``paperhub.agents.research_graph``) wires together as graph edges. Each
+helper is a focused step:
+
+* paper_search:
+    - ``_references_block`` / paper_search prompt seed
+    - ``_extract_candidates`` (parses the final ``json:candidates`` block)
+    - ``_index_library_hit`` / ``_index_ss_hit`` / ``_index_related_hit``
+* paper_qa:
+    - ``_resolve_enabled_papers`` (resolve enabled refs for the session)
+    - ``_paper_qa_single_stream`` (N=1: retrieve + generate)
+    - ``_paper_qa_map_one`` (map step: one paper → analysis)
+    - ``_paper_qa_synthesize_stream`` (reduce step: merge analyses)
+
+The "umbrella" async generators ``paper_search`` and ``paper_qa_stream``
+that lived here in Plan C v3 are intentionally retained as **legacy
+façades** — they compose the helpers in series and let the existing
+test suite (``test_research_paper_search.py`` /
+``test_research_paper_qa.py``) keep exercising the same surface without
+needing to spin up a LangGraph. New control-flow work happens in the
+subgraph; these façades exist only so the test seam remains.
 
 v2.4 paper_search is read-only: the LLM may call search_library /
 search_semantic_scholar / find_related_papers, then ends the turn with a
@@ -217,27 +240,22 @@ async def _references_block(
     return len(rows), "\n".join(lines)
 
 
-async def paper_search(
-    state: AgentState,
+async def _build_paper_search_messages(
     *,
-    adapter: LlmAdapter | None,  # kept for interface parity; uses litellm directly
-    tracer: Tracer,
-    model: str,
+    state: AgentState,
     conn: aiosqlite.Connection,
-    pipeline: PaperPipeline,  # noqa: ARG001 — kept for interface parity (chat layer attaches)
     registry: PromptRegistry | None = None,
-    **litellm_kwargs: Any,
-) -> AsyncIterator[ToolStepYield | SearchResultsYield | FinalOnlyMessage]:
-    """v2.4 read-only tool-calling loop.
+) -> list[dict[str, Any]]:
+    """Build the initial LLM message list for a paper_search turn.
 
-    Yields:
-      - ToolStepYield after each tracer.step closes (real-time trace updates).
-      - SearchResultsYield(candidates) parsed from the agent's final
-        ``json:candidates`` block, BEFORE the FinalOnlyMessage so the chat
-        layer can enrich + emit the search_results SSE event in order.
-      - FinalOnlyMessage(prose only — the json block has been stripped).
+    Composes ``system`` (from paper_search/v1 prompt), the prior chat
+    ``history`` (already-formatted role/content dicts), and the rendered
+    ``user`` prompt that includes the session's enabled references block.
+
+    Extracted from the legacy ``paper_search`` async-generator so the
+    LangGraph ``ps_plan`` node can build state["ps_messages"] on the first
+    iteration without re-implementing the seed logic.
     """
-    del adapter  # interface parity only
     user_message = state["user_message"]
     session_id = state["session_id"]
     history = state.get("history") or []
@@ -253,7 +271,154 @@ async def paper_search(
     messages: list[dict[str, Any]] = [{"role": "system", "content": system}]
     messages.extend(history)
     messages.append({"role": "user", "content": user})
+    return messages
 
+
+async def _paper_search_plan_step(
+    *,
+    messages: list[dict[str, Any]],
+    tracer: Tracer,
+    model: str,
+    iteration: int,
+    **litellm_kwargs: Any,
+) -> dict[str, Any]:
+    """Run one paper_search:plan tracer step + litellm.acompletion call.
+
+    Returns the assistant message (``dict`` with ``content`` and possibly
+    ``tool_calls``). The tracer step row is persisted as a side effect; the
+    caller drains it via ``drain_tool_calls_since``.
+    """
+    async with tracer.step(
+        agent="research", tool="paper_search:plan", model=model,
+    ) as step:
+        step.record_args(
+            {"iteration": iteration, "messages_len": len(messages)},
+        )
+        response = await litellm.acompletion(
+            model=model,
+            messages=messages,
+            tools=TOOL_SCHEMAS,
+            tool_choice="auto",
+            **litellm_kwargs,
+        )
+        msg: dict[str, Any] = response["choices"][0]["message"]
+        step.record_result(
+            {
+                "had_tool_calls": bool(msg.get("tool_calls")),
+                "content_len": len(msg.get("content") or ""),
+            },
+        )
+    return msg
+
+
+async def _dispatch_paper_search_tool_call(
+    *,
+    call: dict[str, Any],
+    tracer: Tracer,
+    conn: aiosqlite.Connection,
+    session_id: int,
+    external_search_calls: int,
+    recent_results: dict[str, dict[str, Any]],
+) -> tuple[Any, int]:
+    """Dispatch a single tool call inside its own tracer step.
+
+    Updates ``recent_results`` in place. Returns ``(result, new_external_count)``.
+    The result is JSON-serialisable; the caller stitches it into the
+    LLM message list as a ``tool`` role message.
+    """
+    name = call["function"]["name"]
+    args = json.loads(call["function"]["arguments"] or "{}")
+    result: Any
+    new_external_count = external_search_calls
+    async with tracer.step(
+        agent="research", tool=f"paper_search:{name}", model=None,
+    ) as step:
+        step.record_args(args)
+        try:
+            if name == "search_library":
+                lib_hits = [
+                    asdict(h)
+                    for h in await search_library_dispatch(
+                        conn=conn, session_id=session_id, **args,
+                    )
+                ]
+                for hit in lib_hits:
+                    pid, meta = _index_library_hit(hit)
+                    recent_results[pid] = meta
+                result = [
+                    {**h, "paper_id": f"library:{h['paper_content_id']}"}
+                    for h in lib_hits
+                ]
+            elif name == "search_semantic_scholar":
+                if external_search_calls >= MAX_EXTERNAL_SEARCH_CALLS_PER_TURN:
+                    result = {
+                        "error": "external_search_call_cap_reached",
+                        "cap": MAX_EXTERNAL_SEARCH_CALLS_PER_TURN,
+                    }
+                else:
+                    new_external_count = external_search_calls + 1
+                    ss_hits = [
+                        asdict(h)
+                        for h in await search_semantic_scholar_dispatch(**args)
+                    ]
+                    for hit in ss_hits:
+                        pid, meta = _index_ss_hit(hit)
+                        recent_results[pid] = meta
+                    result = ss_hits
+            elif name == "find_related_papers":
+                related = await find_related_papers_dispatch(**args)
+                for hit in related:
+                    indexed = _index_related_hit(hit)
+                    if indexed is not None:
+                        pid, meta = indexed
+                        recent_results[pid] = meta
+                result = related
+            else:
+                result = {"error": f"unknown_tool:{name}"}
+            step.record_result(
+                {
+                    "summary": result
+                    if isinstance(result, dict)
+                    else {"count": len(result)},
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            result = {"error": str(exc), "tool": name}
+            step.record_result({"error": str(exc)})
+            step.mark_error(str(exc))
+    return result, new_external_count
+
+
+async def paper_search(
+    state: AgentState,
+    *,
+    adapter: LlmAdapter | None,  # kept for interface parity; uses litellm directly
+    tracer: Tracer,
+    model: str,
+    conn: aiosqlite.Connection,
+    pipeline: PaperPipeline,  # noqa: ARG001 — kept for interface parity (chat layer attaches)
+    registry: PromptRegistry | None = None,
+    **litellm_kwargs: Any,
+) -> AsyncIterator[ToolStepYield | SearchResultsYield | FinalOnlyMessage]:
+    """Legacy async-generator façade over the paper_search helpers.
+
+    Plan C v4 retired this as the orchestration source — control flow is
+    now expressed as graph edges in ``research_graph.build_paper_search_subgraph``.
+    This generator is kept because two test files still drive it directly:
+
+      - ``test_research_paper_search.py`` (5 cases) — easier to assert on a
+        flat async iterator than to spin up a LangGraph;
+      - ``test_chat_sse.py`` (paper_search cases) — monkeypatch
+        ``chat_module.paper_search`` with a fake generator.
+
+    Implementation composes the same helpers the subgraph wires together,
+    so behaviour and tracer-step shape stay identical.
+    """
+    del adapter  # interface parity only
+    messages = await _build_paper_search_messages(
+        state=state, conn=conn, registry=registry,
+    )
+    session_id = state["session_id"]
     run_id: int = state["run_id"]
     last_yielded_step = -1
     external_search_calls = 0
@@ -262,26 +427,10 @@ async def paper_search(
     recent_results: dict[str, dict[str, Any]] = {}
 
     for iteration in range(MAX_TOOL_ITERATIONS):
-        async with tracer.step(
-            agent="research", tool="paper_search:plan", model=model,
-        ) as step:
-            step.record_args(
-                {"iteration": iteration, "messages_len": len(messages)},
-            )
-            response = await litellm.acompletion(
-                model=model,
-                messages=messages,
-                tools=TOOL_SCHEMAS,
-                tool_choice="auto",
-                **litellm_kwargs,
-            )
-            msg = response["choices"][0]["message"]
-            step.record_result(
-                {
-                    "had_tool_calls": bool(msg.get("tool_calls")),
-                    "content_len": len(msg.get("content") or ""),
-                },
-            )
+        msg = await _paper_search_plan_step(
+            messages=messages, tracer=tracer, model=model,
+            iteration=iteration, **litellm_kwargs,
+        )
 
         # Yield the plan step that just closed.
         for rec in await drain_tool_calls_since(conn, run_id, last_yielded_step):
@@ -308,67 +457,11 @@ async def paper_search(
         )
 
         for call in tool_calls:
-            name = call["function"]["name"]
-            args = json.loads(call["function"]["arguments"] or "{}")
-            result: Any
-            async with tracer.step(
-                agent="research", tool=f"paper_search:{name}", model=None,
-            ) as step:
-                step.record_args(args)
-                try:
-                    if name == "search_library":
-                        lib_hits = [
-                            asdict(h)
-                            for h in await search_library_dispatch(
-                                conn=conn, session_id=session_id, **args,
-                            )
-                        ]
-                        for hit in lib_hits:
-                            pid, meta = _index_library_hit(hit)
-                            recent_results[pid] = meta
-                        # Add the prefixed paper_id to each row so the LLM
-                        # can quote it back verbatim in json:candidates.
-                        result = [
-                            {**h, "paper_id": f"library:{h['paper_content_id']}"}
-                            for h in lib_hits
-                        ]
-                    elif name == "search_semantic_scholar":
-                        if external_search_calls >= MAX_EXTERNAL_SEARCH_CALLS_PER_TURN:
-                            result = {
-                                "error": "external_search_call_cap_reached",
-                                "cap": MAX_EXTERNAL_SEARCH_CALLS_PER_TURN,
-                            }
-                        else:
-                            external_search_calls += 1
-                            ss_hits = [
-                                asdict(h)
-                                for h in await search_semantic_scholar_dispatch(**args)
-                            ]
-                            for hit in ss_hits:
-                                pid, meta = _index_ss_hit(hit)
-                                recent_results[pid] = meta
-                            result = ss_hits
-                    elif name == "find_related_papers":
-                        related = await find_related_papers_dispatch(**args)
-                        for hit in related:
-                            indexed = _index_related_hit(hit)
-                            if indexed is not None:
-                                pid, meta = indexed
-                                recent_results[pid] = meta
-                        result = related
-                    else:
-                        result = {"error": f"unknown_tool:{name}"}
-                    step.record_result(
-                        {
-                            "summary": result
-                            if isinstance(result, dict)
-                            else {"count": len(result)},
-                        },
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    result = {"error": str(exc), "tool": name}
-                    step.record_result({"error": str(exc)})
-                    step.mark_error(str(exc))
+            result, external_search_calls = await _dispatch_paper_search_tool_call(
+                call=call, tracer=tracer, conn=conn, session_id=session_id,
+                external_search_calls=external_search_calls,
+                recent_results=recent_results,
+            )
 
             # Yield the tool-dispatch step that just closed.
             for rec in await drain_tool_calls_since(conn, run_id, last_yielded_step):
@@ -379,7 +472,7 @@ async def paper_search(
                 {
                     "role": "tool",
                     "tool_call_id": call["id"],
-                    "name": name,
+                    "name": call["function"]["name"],
                     "content": json.dumps(result, default=str),
                 },
             )
@@ -390,26 +483,17 @@ async def paper_search(
     )
 
 
-async def paper_qa_stream(
-    state: AgentState,
-    *,
-    adapter: LlmAdapter,
-    tracer: Tracer,
-    model: str,
-    retriever: Retriever,
+async def _resolve_enabled_papers(
     conn: aiosqlite.Connection,
-    **adapter_kwargs: Any,
-) -> AsyncIterator[str | FinalOnlyMessage]:
-    """Stream paper_qa tokens.
+    *,
+    session_id: int,
+    tracer: Tracer,
+) -> list[tuple[int, str]]:
+    """Resolve (paper_content_id, title) for every enabled paper in the session.
 
-    N=0: yields FinalOnlyMessage (no enabled papers).
-    N=1: single-paper path — retrieve + generate, citing paper by title.
-    N>=2: map-reduce — parallel per-paper retrieval + analysis, then synthesis.
+    Wrapped in a ``paper_qa:resolve`` tracer step for FR-09. Returned shape is
+    consumed by the LangGraph paper_qa nodes (count-branch + single / map).
     """
-    user_message = state["user_message"]
-    session_id = state["session_id"]
-
-    # 1. Resolve enabled paper rows + titles in one query.
     async with tracer.step(
         agent="research", tool="paper_qa:resolve", model=None,
     ) as step:
@@ -428,6 +512,35 @@ async def paper_qa_stream(
         step.record_result(
             {"enabled": [{"id": i, "title": t} for i, t in enabled_papers]},
         )
+    return enabled_papers
+
+
+async def paper_qa_stream(
+    state: AgentState,
+    *,
+    adapter: LlmAdapter,
+    tracer: Tracer,
+    model: str,
+    retriever: Retriever,
+    conn: aiosqlite.Connection,
+    **adapter_kwargs: Any,
+) -> AsyncIterator[str | FinalOnlyMessage]:
+    """Stream paper_qa tokens (legacy async-generator façade).
+
+    Retained for tests that exercise the full flow as a single generator.
+    The chat.py request path now runs through the LangGraph research subgraph
+    in ``paperhub.agents.research_graph``; this helper composes the same node
+    primitives in series.
+
+    N=0: yields FinalOnlyMessage (no enabled papers).
+    N=1: single-paper path — retrieve + generate, citing paper by title.
+    N>=2: map-reduce — parallel per-paper retrieval + analysis, then synthesis.
+    """
+    user_message = state["user_message"]
+
+    enabled_papers = await _resolve_enabled_papers(
+        conn, session_id=state["session_id"], tracer=tracer,
+    )
 
     if not enabled_papers:
         yield FinalOnlyMessage(
@@ -437,10 +550,8 @@ async def paper_qa_stream(
         return
 
     if len(enabled_papers) == 1:
-        # Single-paper path: functionally identical to old join-RAG when N=1,
-        # but now cites by title.
-        async for tok in _paper_qa_single_paper(
-            enabled_papers[0],
+        async for tok in _paper_qa_single_stream(
+            paper=enabled_papers[0],
             user_message=user_message,
             adapter=adapter,
             tracer=tracer,
@@ -468,9 +579,9 @@ async def paper_qa_stream(
         yield tok
 
 
-async def _paper_qa_single_paper(
-    paper: tuple[int, str],
+async def _paper_qa_single_stream(
     *,
+    paper: tuple[int, str],
     user_message: str,
     adapter: LlmAdapter,
     tracer: Tracer,
@@ -480,7 +591,11 @@ async def _paper_qa_single_paper(
     state: AgentState,
     **adapter_kwargs: Any,
 ) -> AsyncIterator[str | FinalOnlyMessage]:
-    """Single-paper path: retrieve top-k chunks, stream LLM citing by title."""
+    """Single-paper path: retrieve top-k chunks, stream LLM citing by title.
+
+    Yields a single ``FinalOnlyMessage`` when no chunks are retrieved (the
+    "empty corpus" sentinel); otherwise yields successive token strings.
+    """
     pid, title = paper
 
     async with conn.execute(
@@ -530,12 +645,11 @@ async def _paper_qa_single_paper(
         step.record_result({"length": sum(len(c) for c in collected)})
 
 
-# Chunks per paper in the map step — balance between context size and signal.
-_K_PER_PAPER = 5
-
-
-async def _paper_qa_map_reduce(
-    papers: list[tuple[int, str]],
+# Backwards-compat alias used by the legacy async-generator paper_qa_stream
+# (kept for test surface). Identical to ``_paper_qa_single_stream`` modulo the
+# positional ``paper`` argument.
+async def _paper_qa_single_paper(
+    paper: tuple[int, str],
     *,
     user_message: str,
     adapter: LlmAdapter,
@@ -546,89 +660,116 @@ async def _paper_qa_map_reduce(
     state: AgentState,
     **adapter_kwargs: Any,
 ) -> AsyncIterator[str | FinalOnlyMessage]:
-    """Map-reduce path for N>=2 papers.
+    async for tok in _paper_qa_single_stream(
+        paper=paper,
+        user_message=user_message,
+        adapter=adapter,
+        tracer=tracer,
+        model=model,
+        retriever=retriever,
+        conn=conn,
+        state=state,
+        **adapter_kwargs,
+    ):
+        yield tok
 
-    Map: fan out parallel per-paper retrieval + LLM analysis.
-    Reduce: stream synthesizer LLM over the per-paper analyses.
+
+# Chunks per paper in the map step — balance between context size and signal.
+_K_PER_PAPER = 5
+
+
+async def _paper_qa_map_one(
+    *,
+    pid: int,
+    title: str,
+    user_message: str,
+    adapter: LlmAdapter,
+    tracer: Tracer,
+    model: str,
+    retriever: Retriever,
+    conn: aiosqlite.Connection,
+    **adapter_kwargs: Any,
+) -> tuple[int, str, list[RetrievedChunk], str]:
+    """Single map step: retrieve top-k chunks for one paper, run the
+    per-paper analysis LLM call, return ``(pid, title, chunks, analysis)``.
+
+    The map node in the research subgraph fans these out via ``asyncio.gather``.
     """
+    async with conn.execute(
+        "SELECT COUNT(*) FROM chunks WHERE paper_content_id = ?", (pid,),
+    ) as cur:
+        count_row = await cur.fetchone()
+    corpus = int(count_row[0]) if count_row else 0
 
-    async def _analyze_one_paper(
-        pid: int, title: str,
-    ) -> tuple[int, str, list[RetrievedChunk], str]:
-        """Returns (paper_content_id, title, chunks, per_paper_analysis_text)."""
-        async with conn.execute(
-            "SELECT COUNT(*) FROM chunks WHERE paper_content_id = ?", (pid,),
-        ) as cur:
-            count_row = await cur.fetchone()
-        corpus = int(count_row[0]) if count_row else 0
-
-        async with tracer.step(
-            agent="research", tool="paper_qa:map", model=model,
-        ) as step:
-            step.record_args(
-                {"paper_content_id": pid, "title": title, "k": _K_PER_PAPER},
-            )
-            chunks = retriever.retrieve(
-                user_message,
-                enabled_paper_content_ids=[pid],
-                corpus_size=corpus,
-                top_k=_K_PER_PAPER,
-            )
-
-            if not chunks:
-                step.record_result({"chunk_ids": [], "analysis": "(no chunks)"})
-                return (pid, title, [], "(no relevant chunks found in this paper)")
-
-            chunks_text = "\n\n".join(
-                f"[chunk:{c.chunk_id}]\n{c.text}" for c in chunks
-            )
-            analysis_text = ""
-            async for tok in adapter.stream(
-                slot="paper_qa_per_paper/v1",
-                variables={
-                    "title": title,
-                    "chunks": chunks_text,
-                    "user_message": user_message,
-                },
-                model=model,
-                history=None,
-                **adapter_kwargs,
-            ):
-                analysis_text += tok
-            step.record_result(
-                {
-                    "chunk_ids": [c.chunk_id for c in chunks],
-                    "analysis_len": len(analysis_text),
-                },
-            )
-
-        return (pid, title, chunks, analysis_text)
-
-    # Fan out in parallel.
-    results: list[tuple[int, str, list[RetrievedChunk], str]] = list(
-        await asyncio.gather(*[_analyze_one_paper(pid, title) for pid, title in papers]),
-    )
-
-    # If every paper returned no chunks, short-circuit.
-    if all(not chunks for _, _, chunks, _ in results):
-        yield FinalOnlyMessage(
-            "No relevant chunks were found in the enabled references.",
+    async with tracer.step(
+        agent="research", tool="paper_qa:map", model=model,
+    ) as step:
+        step.record_args(
+            {"paper_content_id": pid, "title": title, "k": _K_PER_PAPER},
         )
-        return
+        chunks = retriever.retrieve(
+            user_message,
+            enabled_paper_content_ids=[pid],
+            corpus_size=corpus,
+            top_k=_K_PER_PAPER,
+        )
 
-    # Build the per-paper block for the synthesizer.
+        if not chunks:
+            step.record_result({"chunk_ids": [], "analysis": "(no chunks)"})
+            return (pid, title, [], "(no relevant chunks found in this paper)")
+
+        chunks_text = "\n\n".join(
+            f"[chunk:{c.chunk_id}]\n{c.text}" for c in chunks
+        )
+        analysis_text = ""
+        async for tok in adapter.stream(
+            slot="paper_qa_per_paper/v1",
+            variables={
+                "title": title,
+                "chunks": chunks_text,
+                "user_message": user_message,
+            },
+            model=model,
+            history=None,
+            **adapter_kwargs,
+        ):
+            analysis_text += tok
+        step.record_result(
+            {
+                "chunk_ids": [c.chunk_id for c in chunks],
+                "analysis_len": len(analysis_text),
+            },
+        )
+
+    return (pid, title, chunks, analysis_text)
+
+
+async def _paper_qa_synthesize_stream(
+    *,
+    per_paper: list[tuple[int, str, list[RetrievedChunk], str]],
+    user_message: str,
+    adapter: LlmAdapter,
+    tracer: Tracer,
+    model: str,
+    state: AgentState,
+    **adapter_kwargs: Any,
+) -> AsyncIterator[str]:
+    """Reduce step: stream the synthesizer LLM over per-paper analyses.
+
+    Caller is expected to have already handled the "no chunks across the
+    board" short-circuit; this helper assumes at least one paper has chunks.
+    """
     per_paper_block = "\n\n---\n\n".join(
-        f'## "{title}"\n{analysis}' for _, title, _, analysis in results
+        f'## "{title}"\n{analysis}' for _, title, _, analysis in per_paper
     )
 
-    # Reduce step: stream synthesis to the user.
     async with tracer.step(
         agent="research", tool="paper_qa:synthesize", model=model,
     ) as step:
         step.record_args(
             {
-                "n_papers": len(results),
-                "n_chunks": sum(len(c) for _, _, c, _ in results),
+                "n_papers": len(per_paper),
+                "n_chunks": sum(len(c) for _, _, c, _ in per_paper),
             },
         )
         collected: list[str] = []
@@ -645,3 +786,59 @@ async def _paper_qa_map_reduce(
             collected.append(tok)
             yield tok
         step.record_result({"length": sum(len(c) for c in collected)})
+
+
+async def _paper_qa_map_reduce(
+    papers: list[tuple[int, str]],
+    *,
+    user_message: str,
+    adapter: LlmAdapter,
+    tracer: Tracer,
+    model: str,
+    retriever: Retriever,
+    conn: aiosqlite.Connection,
+    state: AgentState,
+    **adapter_kwargs: Any,
+) -> AsyncIterator[str | FinalOnlyMessage]:
+    """Map-reduce path for N>=2 papers (legacy async-generator façade).
+
+    Fan-out happens via ``asyncio.gather`` over ``_paper_qa_map_one``; the
+    reduce step is delegated to ``_paper_qa_synthesize_stream``. Both helpers
+    are reused by the LangGraph map / synthesize nodes.
+    """
+    results: list[tuple[int, str, list[RetrievedChunk], str]] = list(
+        await asyncio.gather(
+            *[
+                _paper_qa_map_one(
+                    pid=pid,
+                    title=title,
+                    user_message=user_message,
+                    adapter=adapter,
+                    tracer=tracer,
+                    model=model,
+                    retriever=retriever,
+                    conn=conn,
+                    **adapter_kwargs,
+                )
+                for pid, title in papers
+            ],
+        ),
+    )
+
+    # If every paper returned no chunks, short-circuit.
+    if all(not chunks for _, _, chunks, _ in results):
+        yield FinalOnlyMessage(
+            "No relevant chunks were found in the enabled references.",
+        )
+        return
+
+    async for tok in _paper_qa_synthesize_stream(
+        per_paper=results,
+        user_message=user_message,
+        adapter=adapter,
+        tracer=tracer,
+        model=model,
+        state=state,
+        **adapter_kwargs,
+    ):
+        yield tok
