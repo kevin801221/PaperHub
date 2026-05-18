@@ -15,6 +15,7 @@ interface ChatState {
   activeSessionId: number | null;
   _nextId: number;
   sidebarCollapsed: boolean;
+  sidebarTab: "chats" | "references";
   composerDraft: string;
   referencesBySession: Record<number, ReferenceItem[]>;
   addedPaperIds: Set<string>;
@@ -45,6 +46,7 @@ interface ChatState {
   restoreSession: (session: ChatSession, atIndex: number) => void;
   removeMessage: (sessionId: number, messageIndex: number) => void;
   toggleSidebar: () => void;
+  setSidebarTab: (tab: "chats" | "references") => void;
   setComposerDraft: (text: string) => void;
   reset: () => void;
   // References
@@ -101,6 +103,7 @@ export const useChatStore = create<ChatState>()(
       activeSessionId: null,
       _nextId: 1,
       sidebarCollapsed: false,
+      sidebarTab: "chats",
       composerDraft: "",
       referencesBySession: {},
       addedPaperIds: new Set<string>(),
@@ -275,6 +278,8 @@ export const useChatStore = create<ChatState>()(
       toggleSidebar: () =>
         set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 
+      setSidebarTab: (tab) => set({ sidebarTab: tab }),
+
       setComposerDraft: (text) => set({ composerDraft: text }),
 
       reset: () =>
@@ -350,6 +355,7 @@ export const useChatStore = create<ChatState>()(
         activeSessionId: state.activeSessionId,
         _nextId: state._nextId,
         sidebarCollapsed: state.sidebarCollapsed,
+        sidebarTab: state.sidebarTab,
         composerDraft: state.composerDraft,
       }),
     },

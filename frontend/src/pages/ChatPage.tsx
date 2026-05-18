@@ -2,7 +2,6 @@ import { toast } from "sonner";
 
 import { ChatThread } from "@/components/chat/ChatThread";
 import { Composer } from "@/components/chat/Composer";
-import { ReferenceSourcesDrawer } from "@/components/references/ReferenceSourcesDrawer";
 import { useChatStream } from "@/hooks/useChatStream";
 import { useChatStore } from "@/store/chat";
 import { useGlobalShortcuts } from "@/hooks/useGlobalShortcuts";
@@ -35,7 +34,6 @@ export function ChatPage() {
     <div className="flex flex-1 flex-col min-h-0">
       <ChatThread session={activeSession} />
       <Composer onSubmit={handleSubmit} disabled={isStreaming} />
-      <ReferenceSourcesDrawer frontendSessionId={activeSessionId} />
     </div>
   );
 }
