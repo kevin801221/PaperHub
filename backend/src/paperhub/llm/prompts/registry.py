@@ -1,7 +1,13 @@
+from __future__ import annotations
+
 from dataclasses import dataclass
 from importlib.resources import files
+from typing import TYPE_CHECKING
 
 import yaml
+
+if TYPE_CHECKING:
+    from paperhub.mcp.registry import MCPRegistry
 
 
 @dataclass(frozen=True)
@@ -25,3 +31,30 @@ class PromptRegistry:
         result = PromptSlot(system=data["system"], user_template=data["user"])
         self._cache[slot] = result
         return result
+
+
+async def get_paper_search_slot(mcp_registry: MCPRegistry) -> str:
+    """Return the paper_search prompt slot to use for this turn.
+
+    Loads ``paper_search/v2`` (the discover-then-refine variant that teaches
+    the agent to use ``web.search`` / ``web.fetch`` to disambiguate vague
+    queries) when the MCP registry advertises ``web.search``. Falls back to
+    ``paper_search/v1`` (the daemon-down variant — papers.* only) otherwise.
+
+    The selector hinges on ``web.search`` specifically because the v2 worked
+    example assumes search-first discovery; a registry advertising only
+    ``web.fetch`` would let v2 mislead the agent into calling fetch with no
+    URL in hand.
+
+    Implementation note: prefers ``has_tool`` when available, otherwise falls
+    back to scanning ``aggregate_tool_schemas`` so test stubs that pre-date
+    ``has_tool`` (and only implement the aggregator) keep working.
+    """
+    has_tool = getattr(mcp_registry, "has_tool", None)
+    if callable(has_tool):
+        return "paper_search/v2" if await has_tool("web.search") else "paper_search/v1"
+    schemas = await mcp_registry.aggregate_tool_schemas()
+    for entry in schemas:
+        if entry.get("function", {}).get("name") == "web.search":
+            return "paper_search/v2"
+    return "paper_search/v1"

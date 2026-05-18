@@ -162,7 +162,7 @@ def build_paper_search_subgraph(deps: ResearchDeps) -> Any:
         # Seed messages on first iteration (no ps_messages yet).
         if "ps_messages" not in state:
             messages = await _build_paper_search_messages(
-                state=state, conn=deps.conn,
+                state=state, conn=deps.conn, mcp_registry=deps.mcp_registry,
             )
             recent_results: dict[str, dict[str, Any]] = {}
             ps_iter = 0

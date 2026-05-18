@@ -45,7 +45,7 @@ from paperhub.agents.research_tools import build_tool_schemas
 from paperhub.agents.state import AgentState
 from paperhub.db.tool_calls import drain_tool_calls_since
 from paperhub.llm.adapter import LlmAdapter
-from paperhub.llm.prompts.registry import PromptRegistry
+from paperhub.llm.prompts.registry import PromptRegistry, get_paper_search_slot
 from paperhub.mcp.registry import MCPRegistry
 from paperhub.pipelines.paper_pipeline import PaperPipeline
 from paperhub.rag.retriever import RetrievedChunk, Retriever
@@ -247,13 +247,15 @@ async def _build_paper_search_messages(
     *,
     state: AgentState,
     conn: aiosqlite.Connection,
+    mcp_registry: MCPRegistry,
     registry: PromptRegistry | None = None,
 ) -> list[dict[str, Any]]:
     """Build the initial LLM message list for a paper_search turn.
 
-    Composes ``system`` (from paper_search/v1 prompt), the prior chat
-    ``history`` (already-formatted role/content dicts), and the rendered
-    ``user`` prompt that includes the session's enabled references block.
+    Composes ``system`` (from the paper_search prompt — v2 when the MCP
+    registry advertises ``web.search``, else v1), the prior chat ``history``
+    (already-formatted role/content dicts), and the rendered ``user`` prompt
+    that includes the session's enabled references block.
 
     Extracted from the legacy ``paper_search`` async-generator so the
     LangGraph ``ps_plan`` node can build state["ps_messages"] on the first
@@ -265,7 +267,8 @@ async def _build_paper_search_messages(
 
     n_refs, refs_block = await _references_block(conn, session_id)
     reg = registry or PromptRegistry()
-    prompt = reg.get("paper_search/v1")
+    slot = await get_paper_search_slot(mcp_registry)
+    prompt = reg.get(slot)
     system = prompt.system
     user = prompt.user_template.format(
         n_refs=n_refs, references_block=refs_block, user_message=user_message,
@@ -464,7 +467,7 @@ async def paper_search(
     """
     del adapter  # interface parity only
     messages = await _build_paper_search_messages(
-        state=state, conn=conn, registry=registry,
+        state=state, conn=conn, mcp_registry=mcp_registry, registry=registry,
     )
     session_id = state["session_id"]
     run_id: int = state["run_id"]
