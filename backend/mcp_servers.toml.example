@@ -71,11 +71,15 @@ aliases = { "fetchWebContent" = "fetch" }
 timeout_seconds = 8.0
 # Auto-spawn when not reachable; first arg must resolve via PATH
 # (resolved with shutil.which — works for `.cmd` shims on Windows).
-# `serve` is the open-webSearch documented subcommand for an HTTP-only
-# daemon (the bare entrypoint is the MCP-stdio compatibility mode and
-# is explicitly not recommended for agent automation).
-launch = ["npx", "-y", "open-websearch@latest", "serve"]
-launch_env = { PORT = "3000" }
+# IMPORTANT: use the BARE `open-websearch` entrypoint, NOT `serve`.
+# Per the open-webSearch README "Choose the Right Path" section:
+#   - bare entrypoint = MCP transport (what the agent talks to).
+#   - `serve` subcommand = a separate local REST daemon on port 3210,
+#     unrelated to MCP. Using `serve` boots the wrong service and the
+#     registry probe of `:3000` times out.
+# Bare + `MODE=http` (or `both`) starts the MCP server on $PORT.
+launch = ["npx", "-y", "open-websearch@latest"]
+launch_env = { PORT = "3000", MODE = "http" }
 launch_ready_timeout = 30.0   # first run downloads the package; ~25s observed
 
 # ─── future blocks ───────────────────────────────────────────────────────
