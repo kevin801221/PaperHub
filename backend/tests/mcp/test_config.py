@@ -206,3 +206,109 @@ def test_dataclass_is_frozen() -> None:
     )
     with pytest.raises(FrozenInstanceError):
         cfg.name = "other"  # type: ignore[misc]
+
+
+def test_load_launch_fields(tmp_path: Path) -> None:
+    """The v2.6 autostart fields parse and round-trip via MCPServerConfig."""
+    path = _write(
+        tmp_path,
+        """
+[[server]]
+name = "web"
+transport = "streamable_http"
+url = "http://localhost:3000/mcp"
+expose = ["search"]
+launch = ["npx", "-y", "open-websearch@latest", "serve"]
+launch_env = { PORT = "3000" }
+launch_ready_timeout = 20.0
+""",
+    )
+    cfg = load_mcp_servers(path)[0]
+    assert cfg.launch == ["npx", "-y", "open-websearch@latest", "serve"]
+    assert cfg.launch_env == {"PORT": "3000"}
+    assert cfg.launch_ready_timeout == pytest.approx(20.0)
+    assert cfg.has_launch is True
+
+
+def test_launch_default_is_empty_list(tmp_path: Path) -> None:
+    """Configs that don't set `launch` have `has_launch=False` and no spawn."""
+    path = _write(
+        tmp_path,
+        """
+[[server]]
+name = "web"
+transport = "streamable_http"
+url = "http://localhost:3000/mcp"
+expose = ["search"]
+""",
+    )
+    cfg = load_mcp_servers(path)[0]
+    assert cfg.launch == []
+    assert cfg.has_launch is False
+
+
+def test_launch_rejected_for_stdio_transport(tmp_path: Path) -> None:
+    """stdio servers can't use `launch` — the MCP SDK owns their lifecycle."""
+    path = _write(
+        tmp_path,
+        """
+[[server]]
+name = "sql"
+transport = "stdio"
+command = "uv"
+expose = ["query"]
+launch = ["uv", "run", "paperhub-sqlite-mcp"]
+""",
+    )
+    with pytest.raises(ValueError, match="'launch' is only valid"):
+        load_mcp_servers(path)
+
+
+def test_launch_env_without_launch_rejected(tmp_path: Path) -> None:
+    """`launch_env` orphaned without `launch` is a config error."""
+    path = _write(
+        tmp_path,
+        """
+[[server]]
+name = "web"
+transport = "streamable_http"
+url = "http://localhost:3000/mcp"
+expose = ["search"]
+launch_env = { PORT = "3000" }
+""",
+    )
+    with pytest.raises(ValueError, match="launch_env"):
+        load_mcp_servers(path)
+
+
+def test_launch_ready_timeout_must_be_positive(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        """
+[[server]]
+name = "web"
+transport = "streamable_http"
+url = "http://localhost:3000/mcp"
+expose = ["search"]
+launch = ["sleep", "1"]
+launch_ready_timeout = 0
+""",
+    )
+    with pytest.raises(ValueError, match="launch_ready_timeout"):
+        load_mcp_servers(path)
+
+
+def test_launch_rejects_non_string_elements(tmp_path: Path) -> None:
+    path = _write(
+        tmp_path,
+        """
+[[server]]
+name = "web"
+transport = "streamable_http"
+url = "http://localhost:3000/mcp"
+expose = ["search"]
+launch = ["npx", 2]
+""",
+    )
+    with pytest.raises(ValueError, match="'launch'"):
+        load_mcp_servers(path)

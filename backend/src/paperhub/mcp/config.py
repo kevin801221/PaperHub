@@ -16,6 +16,14 @@ Schema (see `mcp_servers.toml.example`):
     expose = ["search", "fetchWebContent"]
     aliases = { "fetchWebContent" = "fetch" }
     timeout_seconds = 8.0
+    # Optional: how to spawn the daemon when the URL probe fails at
+    # startup. The registry detects an unreachable streamable_http URL
+    # and runs `launch` (with merged `launch_env`), then polls until the
+    # daemon is reachable or `launch_ready_timeout` elapses. Tracked
+    # subprocesses are terminated on FastAPI shutdown.
+    launch = ["npx", "-y", "open-websearch@latest", "serve"]
+    launch_env = { PORT = "3000", MODE = "both" }
+    launch_ready_timeout = 15.0
 """
 from __future__ import annotations
 
@@ -30,6 +38,7 @@ __all__ = ["MCPServerConfig", "Transport", "load_mcp_servers"]
 Transport = Literal["streamable_http", "stdio"]
 _VALID_TRANSPORTS: tuple[Transport, ...] = ("streamable_http", "stdio")
 _DEFAULT_TIMEOUT_SECONDS = 8.0
+_DEFAULT_LAUNCH_READY_TIMEOUT = 15.0
 
 
 @dataclass(frozen=True)
@@ -56,6 +65,14 @@ class MCPServerConfig:
     args: list[str] = field(default_factory=list)
     aliases: dict[str, str] = field(default_factory=dict)
     timeout_seconds: float = _DEFAULT_TIMEOUT_SECONDS
+    launch: list[str] = field(default_factory=list)
+    launch_env: dict[str, str] = field(default_factory=dict)
+    launch_ready_timeout: float = _DEFAULT_LAUNCH_READY_TIMEOUT
+
+    @property
+    def has_launch(self) -> bool:
+        """Whether the registry should spawn this server when unreachable."""
+        return bool(self.launch)
 
 
 def load_mcp_servers(path: Path) -> list[MCPServerConfig]:
@@ -157,6 +174,46 @@ def _parse_block(idx: int, block: dict[str, Any]) -> MCPServerConfig:
     if timeout_seconds <= 0:
         raise ValueError(f"{prefix}: 'timeout_seconds' must be > 0")
 
+    launch_raw = block.get("launch", [])
+    if not isinstance(launch_raw, list) or not all(
+        isinstance(a, str) for a in launch_raw
+    ):
+        raise ValueError(
+            f"{prefix}: 'launch' must be a list of strings "
+            "(e.g. [\"npx\", \"-y\", \"open-websearch@latest\", \"serve\"])"
+        )
+    launch: list[str] = list(launch_raw)
+
+    launch_env_raw = block.get("launch_env", {})
+    if not isinstance(launch_env_raw, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in launch_env_raw.items()
+    ):
+        raise ValueError(f"{prefix}: 'launch_env' must be a string→string map")
+    launch_env: dict[str, str] = dict(launch_env_raw)
+
+    launch_timeout_raw = block.get("launch_ready_timeout", _DEFAULT_LAUNCH_READY_TIMEOUT)
+    if not isinstance(launch_timeout_raw, (int, float)) or isinstance(
+        launch_timeout_raw, bool,
+    ):
+        raise ValueError(f"{prefix}: 'launch_ready_timeout' must be a number")
+    launch_ready_timeout = float(launch_timeout_raw)
+    if launch_ready_timeout <= 0:
+        raise ValueError(f"{prefix}: 'launch_ready_timeout' must be > 0")
+
+    # `launch` only makes sense for streamable_http servers — stdio's
+    # subprocess is owned by the MCP SDK's stdio_client when that transport
+    # is wired (Plan E). Reject the combo loudly so operators don't write
+    # a confusing config.
+    if launch and transport != "streamable_http":
+        raise ValueError(
+            f"{prefix}: 'launch' is only valid with transport='streamable_http' "
+            "(stdio servers are spawned by the MCP SDK directly)"
+        )
+    if launch_env and not launch:
+        raise ValueError(
+            f"{prefix}: 'launch_env' set without 'launch' — no subprocess to apply env to"
+        )
+
     return MCPServerConfig(
         name=name,
         transport=transport,
@@ -166,4 +223,7 @@ def _parse_block(idx: int, block: dict[str, Any]) -> MCPServerConfig:
         expose=expose,
         aliases=aliases,
         timeout_seconds=timeout_seconds,
+        launch=launch,
+        launch_env=launch_env,
+        launch_ready_timeout=launch_ready_timeout,
     )

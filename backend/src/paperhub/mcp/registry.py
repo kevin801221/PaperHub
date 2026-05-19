@@ -1,31 +1,55 @@
-"""Process-wide MCP server registry (SRS v2.5, §III-6.1; v2.6 lazy-connect).
+"""Process-wide MCP server registry (SRS v2.5, §III-6.1; v2.6 lazy-connect;
+v2.6 follow-up: config-driven subprocess autostart).
 
 `MCPRegistry` is constructed once per FastAPI process. ``startup()`` loads
 ``mcp_servers.toml`` and **constructs** one :class:`MCPClient` per
 ``[[server]]`` block, but does NOT open the transport yet. Connection is
 lazy on first tool use (``aggregate_tool_schemas`` or ``call``) — this
 sidesteps the loopback-bootstrap race where the ``papers`` server (Task
-v2.5-3) will point at the backend's own port, which is not yet accepting
+v2.5-3) points at the backend's own port, which is not yet accepting
 connections during lifespan startup.
 
 A server that fails to connect on its first attempt is **remembered as
 failed** for the rest of the registry lifecycle — we don't want a 30-tool
 palette query to hammer a permanently-dead server. Operators restart the
 backend to retry.
+
+**Autostart (config-driven).** A ``[[server]]`` block may declare a
+``launch`` list (e.g. ``["npx", "-y", "open-websearch@latest", "serve"]``).
+At ``startup()`` the registry TCP-probes the configured URL; if no daemon
+is listening, it spawns the launch command (with merged ``launch_env``)
+and polls until the daemon is reachable or ``launch_ready_timeout``
+elapses. Spawned subprocesses are tracked and terminated on ``shutdown()``
+so the daemon dies with the backend. Fresh-clone developers don't need to
+install or pre-run anything — ``npx -y`` auto-fetches the package on
+first boot.
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
+import os
+import shutil
+import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from .client import MCPClient
-from .config import load_mcp_servers
+from .config import MCPServerConfig, load_mcp_servers
 from .errors import MCPUnavailableError
 
 __all__ = ["MCPRegistry"]
 
 _LOG = logging.getLogger(__name__)
+
+# Time budget for a SIGTERM'd subprocess to exit cleanly before SIGKILL.
+_SUBPROCESS_TERMINATE_TIMEOUT = 5.0
+# Polling cadence while waiting for a freshly-spawned daemon to bind.
+_LAUNCH_POLL_INTERVAL = 0.5
+# Per-probe TCP-connect timeout.
+_PROBE_CONNECT_TIMEOUT = 0.5
 
 
 class MCPRegistry:
@@ -40,6 +64,9 @@ class MCPRegistry:
         self._connect_attempted: set[str] = set()
         self._connect_failed: set[str] = set()
         self._aggregated_schemas: list[dict[str, Any]] | None = None
+        # Server name → live subprocess we spawned at startup. Terminated
+        # on `shutdown()`; populated only for configs with `has_launch`.
+        self._launched: dict[str, asyncio.subprocess.Process] = {}
 
     # ------------------------------------------------------------------ lifecycle
 
@@ -74,14 +101,120 @@ class MCPRegistry:
             sorted(self._clients),
         )
 
+        # Spawn subprocesses for any server with `launch` set, in parallel.
+        # Failures are absorbed into log lines — they don't block backend
+        # boot or the rest of the registry. The unreachable server's
+        # `connect()` will fail normally on first use and land in
+        # `_connect_failed` via the existing sticky-fail path.
+        launchable = [cfg for cfg in configs if cfg.has_launch]
+        if launchable:
+            await asyncio.gather(
+                *[self._maybe_launch(cfg) for cfg in launchable],
+                return_exceptions=False,
+            )
+
     async def shutdown(self) -> None:
-        """Disconnect every client. Idempotent at the client level."""
+        """Disconnect every client + terminate spawned subprocesses."""
         for name, client in self._clients.items():
             try:
                 await client.disconnect()
             except Exception as exc:  # noqa: BLE001
                 _LOG.warning("mcp.registry disconnect failed server=%s err=%s", name, exc)
         self._aggregated_schemas = None
+        await self._terminate_launched()
+
+    # ------------------------------------------------------------------ autostart
+
+    async def _maybe_launch(self, cfg: MCPServerConfig) -> None:
+        """Spawn ``cfg.launch`` if the configured URL isn't already serving.
+
+        Operates only on ``streamable_http`` configs (enforced by
+        ``config._parse_block``). On any failure path, logs WARN and returns
+        so the rest of the registry keeps booting — the unreachable server
+        will surface as ``MCPUnavailableError`` at the agent's first
+        ``call_tool``, which the dispatcher already handles cleanly.
+        """
+        assert cfg.url is not None  # enforced by config loader
+        host, port = _host_port_from_url(cfg.url)
+        if host is None or port is None:
+            _LOG.warning(
+                "mcp.registry %s: cannot parse host:port from url=%r; skipping launch",
+                cfg.name, cfg.url,
+            )
+            return
+
+        if await _tcp_reachable(host, port):
+            _LOG.info(
+                "mcp.registry %s daemon already reachable on %s:%d; skipping launch",
+                cfg.name, host, port,
+            )
+            return
+
+        cmd = list(cfg.launch)
+        if not cmd:
+            return
+        exe = shutil.which(cmd[0])
+        if exe is None:
+            _LOG.info(
+                "mcp.registry %s: launch binary %r not on PATH; cannot autostart "
+                "(install it or run `%s` manually)",
+                cfg.name, cmd[0], " ".join(cmd),
+            )
+            return
+
+        env = {**os.environ, **cfg.launch_env}
+        argv = _wrap_for_windows_shim(exe, cmd[1:])
+        _LOG.info(
+            "mcp.registry %s spawning launch=%s env-overrides=%s",
+            cfg.name, argv, sorted(cfg.launch_env),
+        )
+        try:
+            proc = await asyncio.create_subprocess_exec(*argv, env=env)
+        except OSError as exc:
+            _LOG.warning(
+                "mcp.registry %s: subprocess spawn failed (%s); skipping launch",
+                cfg.name, exc,
+            )
+            return
+        self._launched[cfg.name] = proc
+
+        if not await _wait_until_reachable(host, port, deadline_after=cfg.launch_ready_timeout):
+            _LOG.warning(
+                "mcp.registry %s: daemon never became reachable on %s:%d "
+                "within %.1fs; terminating subprocess (pid=%s)",
+                cfg.name, host, port, cfg.launch_ready_timeout, proc.pid,
+            )
+            await _terminate(proc)
+            self._launched.pop(cfg.name, None)
+            return
+
+        _LOG.info(
+            "mcp.registry %s daemon ready on %s:%d (pid=%s)",
+            cfg.name, host, port, proc.pid,
+        )
+
+    async def _terminate_launched(self) -> None:
+        """Terminate every subprocess we spawned. Parallel for fast shutdown."""
+        if not self._launched:
+            return
+        items = list(self._launched.items())
+        self._launched.clear()
+        await asyncio.gather(
+            *[self._terminate_one(name, proc) for name, proc in items],
+            return_exceptions=False,
+        )
+
+    async def _terminate_one(
+        self, name: str, proc: asyncio.subprocess.Process,
+    ) -> None:
+        try:
+            await _terminate(proc)
+            _LOG.info("mcp.registry %s subprocess terminated (pid=%s)", name, proc.pid)
+        except Exception as exc:  # noqa: BLE001
+            _LOG.warning(
+                "mcp.registry %s subprocess termination error pid=%s err=%s",
+                name, proc.pid, exc,
+            )
 
     # ------------------------------------------------------------------ public ops
 
@@ -182,3 +315,70 @@ class MCPRegistry:
                 exc,
             )
             self._connect_failed.add(name)
+
+
+# ===================================================================== helpers
+
+
+def _host_port_from_url(url: str) -> tuple[str | None, int | None]:
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port
+    if port is None and parsed.scheme in {"http", "https"}:
+        port = 80 if parsed.scheme == "http" else 443
+    return host, port
+
+
+async def _tcp_reachable(host: str, port: int) -> bool:
+    """Cheap probe: open a TCP connection, close immediately. The streamable-
+    HTTP transport tolerates a closed socket so this doesn't disturb a live
+    daemon."""
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port),
+            timeout=_PROBE_CONNECT_TIMEOUT,
+        )
+    except (OSError, TimeoutError):
+        return False
+    writer.close()
+    with contextlib.suppress(Exception):
+        # Closing a probe socket; benign races on the response side.
+        await writer.wait_closed()
+    return True
+
+
+async def _wait_until_reachable(host: str, port: int, deadline_after: float) -> bool:  # noqa: ASYNC109 — operator-facing knob from MCPServerConfig.launch_ready_timeout
+    """Poll ``host:port`` until it accepts a TCP connect, up to ``deadline_after`` seconds."""
+    loop = asyncio.get_event_loop()
+    deadline = loop.time() + deadline_after
+    while loop.time() < deadline:
+        if await _tcp_reachable(host, port):
+            return True
+        await asyncio.sleep(_LAUNCH_POLL_INTERVAL)
+    return False
+
+
+def _wrap_for_windows_shim(exe: str, args: list[str]) -> list[str]:
+    """On Windows, ``npx`` / ``yarn`` / ``pnpm`` resolve to ``.cmd`` shims
+    that ``asyncio.create_subprocess_exec`` cannot run directly. Route them
+    through ``cmd /c`` so the shim launches its target."""
+    if sys.platform.startswith("win") and exe.lower().endswith(".cmd"):
+        return ["cmd", "/c", exe, *args]
+    return [exe, *args]
+
+
+async def _terminate(proc: asyncio.subprocess.Process) -> None:
+    """Graceful SIGTERM, then SIGKILL after ``_SUBPROCESS_TERMINATE_TIMEOUT``."""
+    if proc.returncode is not None:
+        return
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        await asyncio.wait_for(
+            proc.wait(), timeout=_SUBPROCESS_TERMINATE_TIMEOUT,
+        )
+    except TimeoutError:
+        proc.kill()
+        await proc.wait()

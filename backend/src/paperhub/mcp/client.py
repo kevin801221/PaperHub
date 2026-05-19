@@ -43,6 +43,31 @@ _LOG = logging.getLogger(__name__)
 _BACKOFF_SCHEDULE: tuple[float, ...] = (0.1, 0.3, 0.7)
 
 
+def _unwrap_connect_error(exc: BaseException) -> str:
+    """Render a connection error in operator-readable form.
+
+    The streamable-HTTP transport runs under an anyio TaskGroup, which
+    surfaces failures as ``BaseExceptionGroup("unhandled errors in a
+    TaskGroup (1 sub-exception)", [...])`` — the outer wrapper hides the
+    real cause (typically ``ConnectionRefusedError: [WinError 1225] The
+    remote computer refused the network connection`` when the daemon is
+    down). Walk single-child exception groups down to the leaf so the
+    WARN log + final ``MCPUnavailableError`` actually tell operators what
+    happened.
+    """
+    cur: BaseException = exc
+    # ExceptionGroup / BaseExceptionGroup are Python 3.11+ types; both
+    # expose `.exceptions`. We only unwrap when there's exactly one child
+    # — multi-child groups mean genuinely-disjoint failures and the
+    # operator should see them all.
+    while (
+        isinstance(cur, BaseExceptionGroup)
+        and len(cur.exceptions) == 1
+    ):
+        cur = cur.exceptions[0]
+    return f"{type(cur).__name__}: {cur}" if str(cur) else type(cur).__name__
+
+
 class MCPClient:
     """One connector per configured MCP server.
 
@@ -129,14 +154,14 @@ class MCPClient:
                 self._connected = True
                 _LOG.info("mcp.connect ok server=%s url=%s", self._config.name, url)
                 return
-            except Exception as exc:  # noqa: BLE001 — re-raised below
+            except BaseException as exc:  # noqa: BLE001 — re-raised below
                 last_exc = exc
                 _LOG.warning(
                     "mcp.connect attempt %d/%d failed server=%s err=%s",
                     attempt + 1,
                     attempts,
                     self._config.name,
-                    exc,
+                    _unwrap_connect_error(exc),
                 )
                 # Ensure any half-opened stack is released before retry.
                 await self._close_stack_silently()
@@ -144,7 +169,7 @@ class MCPClient:
         assert last_exc is not None
         raise MCPUnavailableError(
             f"could not connect to MCP server {self._config.name!r} at {url} "
-            f"after {attempts} attempts: {last_exc}"
+            f"after {attempts} attempts: {_unwrap_connect_error(last_exc)}"
         ) from last_exc
 
     async def disconnect(self) -> None:

@@ -344,3 +344,159 @@ async def test_startup_missing_toml_yields_empty_registry(tmp_path: Path) -> Non
     await reg.shutdown()
 
 
+# --- launch / autostart -------------------------------------------------------
+
+
+def _write_launch_toml(tmp_path: Path, *, launch_line: str = "") -> Path:
+    p = tmp_path / "mcp_servers.toml"
+    p.write_text(
+        f"""
+[[server]]
+name = "web"
+transport = "streamable_http"
+url = "http://localhost:3000/mcp"
+expose = ["search"]
+{launch_line}
+""",
+        encoding="utf-8",
+    )
+    return p
+
+
+class _FakeProcess:
+    """asyncio.subprocess.Process stand-in: tracks terminate/kill/wait calls."""
+
+    def __init__(self) -> None:
+        self.pid = 4242
+        self.returncode: int | None = None
+        self.terminate_calls = 0
+        self.kill_calls = 0
+        self.wait_calls = 0
+
+    def terminate(self) -> None:
+        self.terminate_calls += 1
+        self.returncode = 0  # graceful exit
+
+    def kill(self) -> None:
+        self.kill_calls += 1
+        self.returncode = -9
+
+    async def wait(self) -> int:
+        self.wait_calls += 1
+        return self.returncode or 0
+
+
+async def test_startup_skips_launch_when_url_already_reachable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The registry's TCP probe shortcuts the spawn when a daemon already serves."""
+    web = _FakeClient("web")
+    _patch_clients(monkeypatch, {"web": web})
+
+    from paperhub.mcp import registry as registry_mod
+
+    async def _stub_reachable(host: str, port: int) -> bool:
+        return True  # daemon already up
+
+    spawn_calls: list[tuple[Any, ...]] = []
+
+    async def _explosive_spawn(*args: Any, **kwargs: Any) -> Any:
+        spawn_calls.append(args)
+        raise AssertionError("should not spawn when daemon is already reachable")
+
+    monkeypatch.setattr(registry_mod, "_tcp_reachable", _stub_reachable)
+    monkeypatch.setattr(
+        registry_mod.asyncio, "create_subprocess_exec", _explosive_spawn,
+    )
+
+    reg = MCPRegistry()
+    with caplog.at_level(logging.INFO):
+        await reg.startup(
+            _write_launch_toml(
+                tmp_path,
+                launch_line='launch = ["sleep", "60"]',
+            ),
+        )
+    assert spawn_calls == []
+    assert any("already reachable" in r.message for r in caplog.records)
+
+
+async def test_startup_spawns_subprocess_then_terminates_on_shutdown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When URL is unreachable + launch set, spawn the subprocess; shutdown terminates it."""
+    web = _FakeClient("web")
+    _patch_clients(monkeypatch, {"web": web})
+
+    from paperhub.mcp import registry as registry_mod
+
+    # Simulate: probe says NOT reachable initially; then reachable once the
+    # subprocess "started" (we toggle the flag after the spawn).
+    state = {"daemon_up": False}
+
+    async def _stub_reachable(host: str, port: int) -> bool:
+        return state["daemon_up"]
+
+    fake_proc = _FakeProcess()
+
+    async def _stub_spawn(*args: Any, **kwargs: Any) -> Any:
+        state["daemon_up"] = True  # spawn "succeeded"
+        return fake_proc
+
+    monkeypatch.setattr(registry_mod, "_tcp_reachable", _stub_reachable)
+    monkeypatch.setattr(
+        registry_mod.asyncio, "create_subprocess_exec", _stub_spawn,
+    )
+    # Ensure shutil.which doesn't try the real PATH on this host.
+    monkeypatch.setattr(registry_mod.shutil, "which", lambda name: f"/fake/{name}")
+
+    reg = MCPRegistry()
+    await reg.startup(
+        _write_launch_toml(
+            tmp_path,
+            launch_line='launch = ["fakebin"]\nlaunch_ready_timeout = 5.0',
+        ),
+    )
+
+    # The fake process is now tracked and shutdown terminates it.
+    assert "web" in reg._launched  # noqa: SLF001 — inspecting private state
+    assert reg._launched["web"] is fake_proc  # noqa: SLF001
+    await reg.shutdown()
+    assert fake_proc.terminate_calls == 1
+    assert reg._launched == {}  # noqa: SLF001
+
+
+async def test_startup_skips_launch_when_binary_not_on_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """`shutil.which` returning None → log INFO + skip spawn, no error."""
+    web = _FakeClient("web")
+    _patch_clients(monkeypatch, {"web": web})
+
+    from paperhub.mcp import registry as registry_mod
+
+    async def _stub_unreachable(host: str, port: int) -> bool:
+        return False
+
+    monkeypatch.setattr(registry_mod, "_tcp_reachable", _stub_unreachable)
+    monkeypatch.setattr(registry_mod.shutil, "which", lambda _name: None)
+
+    async def _explosive_spawn(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("should not spawn when binary is missing")
+
+    monkeypatch.setattr(
+        registry_mod.asyncio, "create_subprocess_exec", _explosive_spawn,
+    )
+
+    reg = MCPRegistry()
+    with caplog.at_level(logging.INFO):
+        await reg.startup(
+            _write_launch_toml(
+                tmp_path,
+                launch_line='launch = ["nonexistent-binary-1234"]',
+            ),
+        )
+    assert reg._launched == {}  # noqa: SLF001
+    assert any("not on PATH" in r.message for r in caplog.records)
+
+
