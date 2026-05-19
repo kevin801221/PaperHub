@@ -6,7 +6,7 @@ This file is loaded into every Claude Code session that opens this repo. Read it
 
 PaperHub is a paper-aware chat client with multi-agent tool-routing, an in-repo RAG knowledge base, an in-repo slide pipeline, and a Citation Canvas so every cited chunk traces back to source. It is decomposed from two reference projects (`paper2slides-plus`, `Intro2GenAI-hw1`) — useful utilities are copied + adapted, not run as services.
 
-**Authoritative spec:** [docs/superpowers/specs/2026-05-17-paperhub-srs.md](docs/superpowers/specs/2026-05-17-paperhub-srs.md) (v2.2). Any architecture / schema / scope question is answered there before code. The two-layer schema (`paper_content` for unique papers, `papers` for per-session membership) and the deferred slide-rendering framework choice are the two most load-bearing decisions to keep in mind.
+**Authoritative spec:** [docs/superpowers/specs/2026-05-17-paperhub-srs.md](docs/superpowers/specs/2026-05-17-paperhub-srs.md) (**v2.7**). Any architecture / schema / scope question is answered there before code. The two-layer schema (`paper_content` for unique papers, `papers` for per-session membership) and the deferred slide-rendering framework choice are the two most load-bearing decisions to keep in mind. v2.7 captures the four-stage `paper_search` decomposition (Parser → Processor [Discover→Resolve] → Finalizer → Synthesizer) and the operational hardening round (opt-in CUDA wheels, device auto-detect, arxiv-ingest resilience, MCP registry cooldown + retry, Windows Proactor loop fix).
 
 ## Implementation plan
 
@@ -31,7 +31,8 @@ When a plan is in flight, it has a corresponding `feat/plan-X-...` branch. The n
 - **Shell:** PowerShell on Windows. Use PowerShell syntax (`;` to chain, `$LASTEXITCODE`, backtick line continuation). Bash also available but PowerShell is the default.
 - **Workflow:** spec → plan → subagent-driven implementation per task → spec compliance review → code quality review → next task. See [superpowers:subagent-driven-development] for the loop.
 - **System binaries:** `pandoc` is an optional dependency used by the Paper Pipeline to render LaTeX → HTML for the Citation Canvas. If absent, the pipeline falls back to `pylatexenc` (pure Python, lower quality). Install via `winget install pandoc` on Windows or your package manager elsewhere.
-- **`open-websearch` (optional, npm)** — no-key multi-engine web-search MCP server. Required for the v2 `paper_search` prompt (discover-then-refine flow). Install: `npm install -g open-websearch`. Run: `open-websearch serve` in a separate shell — the daemon listens on `:3000`. If absent, the backend's MCP registry simply doesn't expose `web.*` tools and the Research Agent falls back to the v1 (papers-only) prompt. Same posture as `pandoc`. The `paperhub-papers` MCP server is mounted IN-PROCESS at `/mcp` and requires no external install — it ships with the backend.
+- **`open-websearch` (optional, npm)** — no-key multi-engine web-search MCP server. Used by the **Discoverer** stage of the v2.7 four-stage `paper_search` subgraph (Parser → Processor [Discover→Resolve] → Finalizer → Synthesizer). Install: `npm install -g open-websearch`. The backend's MCP registry can **auto-spawn** the daemon as a managed subprocess (config in `mcp_servers.toml`); operators can also run it standalone via `open-websearch` (with `MODE=http`, listens on `:3000`). If absent, the registry has no reachable `web` server, the Discoverer falls back gracefully (Parser short-circuit + direct Resolver), and behaviour reverts to v2.4 papers-only. Same optional-external posture as `pandoc`. The `paperhub-papers` MCP server is mounted IN-PROCESS at `/mcp` and requires no external install — it ships with the backend.
+- **GPU operators (optional)** — torch defaults to CPU-only on a clean `uv sync` (small wheel, fast install). For CUDA boxes: `uv sync --extra cu124` / `--extra cu126` / `--extra cu130` swaps to the matching CUDA torch wheel. Device is auto-detected at runtime via `paperhub.pipelines._device.resolve_device()` (CUDA → MPS → CPU walk); override with `PAPERHUB_DEVICE=cpu|cuda|cuda:1|mps`. The embedder + cross-encoder reranker singletons pass `device=` explicitly so GPU operators don't get silent CPU inference. **In-flight (post-Plan C):** an inference-server extraction is underway to move the embedder + reranker out of the backend process; the lazy-singleton-with-`device=` shape is what keeps that migration low-churn.
 - **Test discipline:** every implementation task is TDD. Failing test first, minimal impl, commit.
 - **Fix-now policy (no deferred logical issues):** If a review surfaces an issue, fix it before the next task. **Blockers must be fixed. Non-blocker LOGICAL issues must ALSO be fixed.** Only pure stylistic preferences (naming, comment wording with no semantic difference) may be deferred. Deferred logical items have a track record of becoming critical at the next stage — silent shadowing, partial-write windows, schema drift, masked errors — so we close them at source. The "known follow-ups" sections below are for items genuinely out-of-scope (e.g., waiting on a future plan's surface), not for "we'll get to it later." When in doubt, fix it now.
 
@@ -105,7 +106,7 @@ End-to-end smoke (backend + frontend together, mocked LLM, from repo root):
 - `backend/scripts/` — operator-facing smoke scripts
 - `workspace/` (gitignored) — runtime data: `paperhub.db`, future `papers_cache/`, future `chroma/`
 - `reference/` — copied source from `paper2slides-plus` and `Intro2GenAI-hw1` (read-only reference; do not edit in place — copy + adapt into `backend/src/`)
-- `docs/superpowers/specs/` — SRS (v2.2 current)
+- `docs/superpowers/specs/` — SRS (**v2.7 current**)
 - `docs/superpowers/plans/` — implementation plans
 
 ## Plan A known follow-ups
@@ -117,12 +118,16 @@ All Plan A follow-ups closed during Plan C cleanup pass.
 Items genuinely blocked on future plan surfaces (not lazy-deferred per the fix-now policy):
 
 1. Bundle code-split (currently ~418 KB raw JS) — natural split point lands with Plan D's Citation Canvas component (lazy-load via React.lazy + Suspense). Cannot split usefully before that surface exists.
-2. Replace hardcoded `session_id: null` in `useChatStream.ts` once backend session-creation API ships. Backend currently auto-creates a session per chat request; once `POST /sessions` exists, frontend should create + persist a session id.
+2. ~~Replace hardcoded `session_id: null` in `useChatStream.ts`~~ — closed in the Plan C v2.4 round; frontend now learns `backend_session_id` from the first SSE event and threads it through subsequent POSTs. (Original concern was that backend session-creation didn't exist; `POST /sessions` shipped in Plan C v2.4 follow-up.)
 3. `RejectionPill` is wired but unreachable until Plan E SQL-allowlist or Plan G MCP-permission rejects a tool_call with `status="rejected"`. No frontend change needed; verify the pill renders when those plans land.
 
 ## Plan C known follow-ups
 
-All Plan C follow-ups closed.
+Plan C as-shipped includes the v2.4 (suggest-only + SS-primary), v2.5 (MCP client + open-webSearch + paperhub-papers FastMCP), v2.6 stabilisation, and v2.7 (four-stage paper_search decomposition + opt-in CUDA + device auto-detect) rounds. See [docs/superpowers/plans/2026-05-18-paperhub-C-paper-pipeline-research-agent.md](docs/superpowers/plans/2026-05-18-paperhub-C-paper-pipeline-research-agent.md) Plan C v2.4 / v2.5 / v2.6 / v2.7 sections.
+
+Items genuinely blocked on future plan surfaces (not lazy-deferred per the fix-now policy):
+
+1. **Inference server extraction (in flight, NOT yet a numbered plan)** — pulling `Embedder` + `Reranker` out of the backend process into a separate server with its own GPU pool. Working name: **Plan I — Inference Server Extraction**. The v2.7 lazy-singleton-with-`device=` shape is the seam; `resolve_device()` becomes "what device does the remote server use" once it lands. Will surface in a future SRS revision once the tool-surface decision (HTTP vs gRPC vs an MCP server of its own) is settled.
 
 ## Restricted operations
 
@@ -142,3 +147,6 @@ Local-only operations (commit, branch, stash, local edits) are fine to proceed o
 - "How does the Citation Canvas resolve clicks?" → SRS FR-03 + §III-5.1 Paper Pipeline "Render to HTML" stage
 - "What if a paper is referenced from two sessions?" → only one `paper_content` row + cache dir; two `papers` rows; chunks deduped
 - "Where do figures live for slides after the cache split?" → SRS §III-5.3 step 4a (figure-path resolution at emit time)
+- "Why is `paper_search` four LLM stages?" → SRS v2.7 entry + §III-3 Research Agent row (single-prompt mega-agent failure mode + the decomposition's disjoint-tool-palette guarantee)
+- "How does the Discoverer avoid the quoting-kills-DuckDuckGo footgun?" → `paperhub.search_web(paper_hint, extra_terms)` structured-output wrapper hides the free-text query field (SRS v2.7 + Plan C Task v2.7-2)
+- "Why is torch CPU-only by default?" → opt-in CUDA wheels via `uv sync --extra cu126` (Plan C Task v2.7-3 + CLAUDE.md GPU operators bullet)

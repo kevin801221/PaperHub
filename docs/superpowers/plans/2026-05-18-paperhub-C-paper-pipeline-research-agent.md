@@ -3411,3 +3411,138 @@ Browser verification (negative — `papers.*` server unreachable for any reason)
 - The Research Agent fails cleanly at the first tool call with an `MCPUnavailableError` surfaced as a red trace row; FR-09's "no silent failure" property holds. (Should never happen in practice — the FastMCP sub-app is mounted on the same process, so failure here implies the backend itself is broken.)
 
 ---
+
+## Plan C v2.6 stabilisation log (post-v2.5-7, pre-decomposition)
+
+> **Status:** v2.5 (MCP client + paperhub-papers FastMCP + open-webSearch) shipped via tasks v2.5-1 … v2.5-7. Live UI testing in the same week surfaced a cluster of operational defects that were closed as a stabilisation patch round before the v2.7 decomposition. None of these were "SRS gap" — they were "the code shipped and the wire was right but the runtime fell over." Captured here so a future reader doing a Plan C archaeology dig can find them without crawling git.
+>
+> **Closed in this round** (one fix-commit each; the commit subject + scope tells the story):
+
+| Area | Symptom → fix |
+| --- | --- |
+| **arxiv ingest** | Source archive exceeds arxiv's undocumented per-connection size cap → daemon returns 503 with empty body → retry loop spins forever. Detect the size-cap signature and **fail fast into PDF fallback** (`fix(pipelines): fail fast on arxiv per-connection size cap`). Companion: **byte-range `Range:` resume** on transient mid-download drops so partial downloads don't restart from zero (`fix(pipelines): byte-range resume + PDF fallback`). |
+| **MCP registry** | Failed-at-startup MCP server was dead for the process lifetime, even if the operator started the daemon mid-session. **30-second cooldown + retry** so `open-websearch serve` started after the backend re-enters the palette without a restart (`fix(mcp): registry retries failed servers after 30s cooldown`). Companion: **registry connect path serialised under `asyncio.Lock`** to close an `asyncio.gather` race during lazy first-connect (`fix(mcp): serialise registry connect path`). |
+| **Windows event loop** | MCP stdio subprocess auto-spawn (open-websearch's npm flavour) failed on the default Windows Selector event loop because it doesn't support subprocesses. **Force `WindowsProactorEventLoopPolicy`** in `app.py` + the MCP spawn path (`fix(app,mcp): force Proactor event loop on Windows`). |
+| **Frontend session sync** | Agent-finalized candidates auto-attached at the backend but the Reference Sources drawer didn't refresh. **`search_results` SSE event now triggers a drawer refresh** + the resolved papers auto-add hook (`fix(agent,frontend): auto-add resolved papers to session + refresh references panel`). Companion: **graceful Add-button disable** when `backend_session_id` is still null on first paint (`fix(frontend): graceful Add-button disable`). |
+| **MCP subprocess autostart** | An operator-started backend with no daemon couldn't get `web.*` into the palette without a separate npm process. **Config-driven subprocess autostart** in `mcp_servers.toml`: registry can spawn its own open-websearch daemon as a managed child process with readable connect-error messages (`feat(mcp): config-driven subprocess autostart`). Companions: **exclude `bing` from the auto-spawn engine pool** (it returns 401s in the no-key flow — `fix(mcp): exclude bing`), **use the bare `open-websearch` entrypoint with `MODE=http`** rather than the `serve` subcommand which no longer exists in current builds (`fix(mcp): use bare open-websearch entrypoint`), **IPv4 probe fallback** when Windows `::1` resolution fails (`fix(mcp,pipelines): IPv4 probe fallback`). |
+| **FastMCP wire** | open-websearch's MCP transport needed pinning to **JSON + stateless mode** (`fix(mcp): pin paperhub-papers FastMCP to json+stateless mode`). Loopback handler tracer wrap was double-wrapping calls — **dropped** (`fix(mcp): drop loopback handler tracer wrap; auto-seed mcp_servers.toml`). |
+| **Trace fidelity** | paper_search trace recorded tool-call boundaries but not the LLM payload that triggered them. **Full LLM + web.search payloads now recorded** so a trace replay can reconstruct why the Discoverer picked a given query (`fix(agent): record full LLM + web.search payloads in paper_search trace`). |
+
+Quality gates after this round: `uv run pytest -v` still clean (test count grew by ~15 — additional `tests/mcp/test_registry_cooldown.py`, `tests/mcp/test_subprocess_autostart.py`, `tests/pipelines/test_arxiv_size_cap.py`); `uv run ruff check src tests` clean; `uv run mypy src` strict-clean. No SRS contract change; no DB schema change.
+
+---
+
+## Plan C v2.7 Follow-up Tasks (paper_search decomposition + operational hardening)
+
+> **Status:** Live UI testing after the v2.6 stabilisation patch round (above) showed the **v2 mega-agent's intrinsic failure mode** — one LLM turn juggling 5 tools (`papers.search_library`, `papers.search_semantic_scholar`, `papers.find_related_papers`, `web.search`, `web.fetch`) plus ~200 lines of HARD-REQUIREMENT prompt blocks for multi-paper fan-out + `json:candidates` emission + corrective retry + honest-stop reasoning. The traces showed Semantic Scholar getting hammered with re-queries and the `json:candidates` block silently dropped under load. Adding more prompt rules diluted attention on the existing ones; the prompt was at its capacity. The fix is architectural: decompose paper_search so each LLM call has a single responsibility and a focused tool palette. This section captures the decomposition + a coupled operational-hardening round (opt-in CUDA, device auto-detect) that landed alongside it.
+>
+> **SRS reference**: [v2.7 entry](../specs/2026-05-17-paperhub-srs.md) + the **§III-3 Research Agent row** (rewritten to describe the four-stage subgraph) + the **FR-07 v2.7 paragraph** + **§III-5.1 / §III-5.2 device-aware embedder + reranker notes**.
+>
+> **Design summary**: paper_search is replaced by a four-stage LangGraph subgraph — Parser → Processor [Discover→Resolve inner loop, fan-out per request] → Finalizer → Synthesizer. Each stage has its own ~30-line prompt and a focused tool palette. The Finalizer is **Python, not LLM** — `SearchResultsYield` is built deterministically from `ResolvedPaper`s, so the `json:candidates` block is structurally guaranteed (LLM can no longer drop it). The read-only contract, the 3-call combined cap, the finalize semantics, the SSE shape, and the three-attach-paths model are all preserved from v2.4-v2.6. No DB schema change. No LLM-visible tool palette change.
+
+### Task v2.7-1 — Decompose `paper_search` into Parser / Processor / Finalizer / Synthesizer
+
+**Symptom (live UI):** the v2 mega-agent (v2.5-5 `paper_search/v2` prompt) repeatedly miscalibrated on multi-paper user messages — Semantic Scholar called 4-6× on slight rephrasings of the same canonical title, then the agent ran out of cap and surrendered a thin shortlist; the `json:candidates` block dropped silently when the LLM ran long; vague queries fell back to "ask a clarifying question" instead of using `web.search` because the LLM couldn't keep all the rules straight.
+
+**Architectural fix:** stop asking one LLM call to do everything. Four single-responsibility stages.
+
+**Files:**
+- New: [`backend/src/paperhub/agents/research_pipeline.py`](../../../backend/src/paperhub/agents/research_pipeline.py) — module-level stages:
+  - `parse_user_message(user_message, current_refs, tracer, ...) -> list[ParsedRequest]` — small-model LLM. Deterministic arxiv-ID + DOI pre-scan runs first; only natural-language fragments hit the LLM. Output is `list[ParsedRequest]` where each request carries `kind: arxiv_id | doi | quoted_title | natural_language` + the raw hint.
+  - `discover_canonical(request, mcp_registry, tracer, ...) -> CanonicalIdentity | NotFound` — small-model LLM bound to the structured-output `paperhub.search_web(paper_hint, extra_terms)` tool (NOT raw `web.search`; the wrapper hides the free-text `query` field so the LLM cannot author quoted single-token hints that would kill DuckDuckGo recall). Bounded to `MAX_WEB_SEARCHES_PER_DISCOVER = 2`. Extracts `arxiv_id` from web hits when present so the Resolver can short-circuit SS.
+  - `resolve_via_ss(canonical, mcp_registry, tracer, ...) -> ResolvedPaper | NotFound` — **no LLM**. Calls `papers.search_semantic_scholar(...)` exactly once with the canonical title. On SS miss, if the Discoverer surfaced an `arxiv_id`, synthesise a `ResolvedPaper` directly from the arxiv hit (don't loop back to Discoverer for a near-duplicate query).
+  - `synthesize_prose(parsed, resolved_set, not_found_set, ...) -> str` — small-model LLM, ~30-line prompt. Generates the user-facing summary prose only. The `json:candidates` block is **not** an LLM responsibility.
+- New: prompts under `backend/src/paperhub/llm/prompts/`:
+  - `paper_search_parse_v1.yaml` — Parser prompt (~50 lines incl. example).
+  - `paper_search_discover_v1.yaml` — Discoverer prompt (~40 lines).
+  - `paper_search_synthesize_v1.yaml` — Synthesizer prompt (~30 lines).
+- Modify: [`backend/src/paperhub/agents/research_graph.py`](../../../backend/src/paperhub/agents/research_graph.py) — `build_paper_search_subgraph` becomes a LangGraph topology: `ps_parse` → `ps_process` (fan-out node that runs `discover_canonical` + `resolve_via_ss` per `ParsedRequest` via `asyncio.gather`, with kick-back-on-NotFound inside the inner loop capped at `MAX_REFINEMENT_LOOPS = 1`) → `ps_finalize` (Python-only: builds `SearchCandidate`s + applies the finalize cap + auto-attaches via the chat layer's dispatcher hook) → `Synthesizer`. Each node drains `drain_tool_calls_since` before closing so `tool_step` SSE events stream per-stage, not batched at end.
+- Modify: [`backend/src/paperhub/agents/research.py`](../../../backend/src/paperhub/agents/research.py) — **remove** the v2/v2.6 `paper_search` async-generator entirely (628 lines → ~30 lines of subgraph entry-point). The `paper_qa` flow is unchanged.
+- Modify: [`backend/src/paperhub/models/domain.py`](../../../backend/src/paperhub/models/domain.py) — add `ParsedRequest`, `CanonicalIdentity`, `ResolvedPaper`, `NotFound` Pydantic models. Extend `AgentState` with subgraph control-flow fields (`ps_parsed_requests`, `ps_resolved`, `ps_not_found`); remove `ps_any_tools_called` (no longer meaningful with disjoint per-stage palettes).
+- Modify: [`backend/src/paperhub/llm/prompts/registry.py`](../../../backend/src/paperhub/llm/prompts/registry.py) — drop `get_paper_search_slot` (v2.5-5's conditional v1/v2 picker); the four new slot names are loaded directly by the pipeline functions. No more single `paper_search` prompt — the four sub-prompts are the contract.
+
+**Removals (clean break, no parallel paths):**
+- `backend/src/paperhub/llm/prompts/paper_search_v1.yaml` (102 lines)
+- `backend/src/paperhub/llm/prompts/paper_search_v2.yaml` (303 lines)
+- 6 test files for the v1/v2 surface: `test_research_paper_search.py` (633 lines), `test_research_subgraph.py` (808 lines), `test_research_tools_mcp.py` (454 lines), `test_paper_search_prompt_selection.py` (124 lines), `test_prompts_paper_search_v1.py` (61 lines), `test_prompts_paper_search_v2.py` (77 lines). All tested behaviour that no longer exists.
+
+Net diff: **+834 / −3489 lines**. The agent shrunk by ~80% by responsibility-splitting.
+
+**Tests (new):**
+- `tests/agents/test_research_pipeline_parse.py` — Parser splits multi-paper user messages; deterministic arxiv-ID + DOI pre-scan short-circuits; single natural-language hint passes through unchanged.
+- `tests/agents/test_research_pipeline_discover.py` — Discoverer cannot author quoted free-text queries (the JSON-schema doesn't have a `query` field); bounded to `MAX_WEB_SEARCHES_PER_DISCOVER = 2`; extracts `arxiv_id` from web hits.
+- `tests/agents/test_research_pipeline_resolve.py` — Resolver calls SS exactly once; on miss-with-arxiv-from-Discoverer, synthesises a `ResolvedPaper` rather than looping back.
+- `tests/agents/test_research_pipeline_synthesize.py` — Synthesizer generates prose only; never emits a `json:candidates` block.
+- `tests/agents/test_research_graph_paper_search.py` — end-to-end subgraph: vague query → Parser ID + DOI pre-scan misses → Discoverer surfaces canonical title → Resolver hits SS → Finalizer emits `SearchResultsYield` deterministically → Synthesizer prose. Tool-step events drain per-stage (assert ordering against `drain_tool_calls_since` calls).
+
+**Acceptance:** 249/250 backend tests pass after the cutover (1 pre-existing flaky parallel-timing test in `test_paper_qa_map_reduce`, unrelated). `uv run mypy src` strict-clean. `uv run ruff check src tests` clean. Live UI smoke: vague query *"that diffusion paper everyone cites"* surfaces a usable shortlist; multi-paper query *"compare the Mamba paper and the original transformer"* fan-outs into two `ps_process` branches that each resolve correctly.
+
+### Task v2.7-2 — Discoverer hardening (structured-output wrapper + arxiv-ID extraction + multi-query)
+
+**Symptom (Discoverer-specific):** even after the decomposition, the Discoverer LLM had a strong habit of wrapping single-token paper hints in double quotes (`"MolmoACT2"`), which empirically kills DuckDuckGo recall — bare `MolmoACT2` returns 10 hits including arxiv URLs while `"MolmoACT2"` returns 0. Prompt rules against quoting were unreliable across model providers (Gemini-2.5-flash ignored them under load). Same loop: prompt-side rules can't be load-bearing for a property that should be structural.
+
+**Fix:** hide raw `web.search(query)` from the LLM and expose a structured-output wrapper `paperhub.search_web(paper_hint, extra_terms)`. The JSON-schema literally has no field that accepts a free-form query string — the LLM passes `paper_hint: str` (the user's name, verbatim) + `extra_terms: list[str]` (additional bare keywords), and Python builds the underlying `web.search` query deterministically with `_BOOLEAN_OPERATORS` stripped. Quotes that sneak into field values are stripped server-side.
+
+**Files:**
+- Modify: [`backend/src/paperhub/agents/research_pipeline.py`](../../../backend/src/paperhub/agents/research_pipeline.py) — `_DISCOVER_TOOL_SCHEMA` defines `paperhub.search_web(paper_hint, extra_terms)`. `_dispatch_discover_tool_call` builds the underlying `web.search` query deterministically and calls `mcp_registry.call("web.search", {...})`. Boolean operators stripped from `extra_terms` before query assembly.
+- Multi-query: when the first `paperhub.search_web` returns 0 paper-shaped hits, the Discoverer is allowed one alternate phrasing (counted against `MAX_WEB_SEARCHES_PER_DISCOVER = 2`). The prompt frames this as "you have two shots — make the second one different from the first."
+- Modify: `paper_search_discover_v1.yaml` — drop all "do not use quotes" / "do not use OR" rules from the prompt (they were the unreliable load-bearing layer). The schema enforces it now.
+- Modify: [`backend/src/paperhub/agents/research_pipeline.py`](../../../backend/src/paperhub/agents/research_pipeline.py) — when a `web.search` hit has an arxiv URL, extract the `arxiv_id` and attach it to the `CanonicalIdentity` so the Resolver can synthesise a `ResolvedPaper` on SS miss.
+
+**Tests:** `tests/agents/test_paperhub_search_web_wrapper.py` — schema rejects `query` field; quoted `paper_hint` values are stripped; boolean operators stripped from `extra_terms`. `tests/agents/test_discover_arxiv_id_extraction.py` — Discoverer attaches arxiv_id from web hit when present.
+
+**Acceptance:** browser test that previously failed on `"MolmoACT2"` → 0 hits now succeeds with `MolmoACT2` → arxiv hit → resolved paper. No prompt-rule changes are load-bearing for the quoting property.
+
+### Task v2.7-3 — Opt-in CUDA wheels + device-aware embedder/reranker
+
+**Symptom:** GPU operators got silent CPU inference because the HF stack defaults to CPU when no `device=` is passed. The fix on the operator side was painful: install a CUDA torch wheel manually, then re-run uv. Default install also pulled the CPU torch wheel (~200 MB) which is wasted for GPU operators.
+
+**Fix:**
+- **uv extras for CUDA wheels:** `pyproject.toml` declares `cu124` / `cu126` / `cu130` extras, each pinning the matching `torch` wheel from the PyTorch CUDA index. Default install stays CPU-only. Operator workflow: `uv sync --extra cu126` for CUDA 12.6 box, otherwise `uv sync`.
+- **Device auto-detect:** new `backend/src/paperhub/pipelines/_device.py:resolve_device()` walks `PAPERHUB_DEVICE` override → CUDA → MPS → CPU. CPU fallback distinguishes *CPU-only-wheel* from *CUDA-wheel-no-GPU* in the warning text so the operator knows whether to reinstall torch or check `nvidia-smi`.
+- **SentenceTransformer + CrossEncoder singletons pass `device=` explicitly:** `paperhub.pipelines.embedder.Embedder.__init__` and `paperhub.rag.reranker.Reranker.__init__` both call `resolve_device()` and pass it through. Lazy-singleton interface unchanged externally — only the constructor is device-aware now.
+
+**Files:**
+- New: [`backend/src/paperhub/pipelines/_device.py`](../../../backend/src/paperhub/pipelines/_device.py) — `resolve_device()` (the file we wrote above).
+- Modify: `backend/src/paperhub/pipelines/embedder.py` — `self._device = resolve_device()` in `__init__`; pass `device=self._device` to `SentenceTransformer(...)`.
+- Modify: `backend/src/paperhub/rag/reranker.py` — same shape; `CrossEncoder(device=self._device)`.
+- Modify: `backend/pyproject.toml` — declare `[project.optional-dependencies] cu124 = ["torch==2.x.x+cu124", ...]` / `cu126` / `cu130`; add the PyTorch index as an `[[tool.uv.index]]` entry.
+- Modify: `backend/.env.example` — document `PAPERHUB_DEVICE=auto|cpu|cuda|cuda:1|mps`.
+- Modify: `CLAUDE.md` (project) — add a "GPU operators" subsection pointing at `uv sync --extra cu126`.
+
+**Tests:** `tests/pipelines/test_device_resolution.py` — `PAPERHUB_DEVICE` override honoured; auto-detect picks CUDA when `torch.cuda.is_available()` is mocked true; falls back to MPS then CPU; CPU-only-wheel warning text differs from CUDA-wheel-no-GPU.
+
+**Acceptance:** clean clone + `uv sync` boots with CPU torch (small wheel); `uv sync --extra cu126` swaps to CUDA torch; embedder logs `paperhub.device auto-detected=cuda` instead of the silent CPU default; backend cold-boot time on a GPU box drops from ~12s (CPU load) to ~3s (CUDA load).
+
+### Forward-looking: remote inference server (NOT scoped to Plan C)
+
+**Status:** in flight at the time of this writing. Goal: pull `Embedder` + `Reranker` out of the backend process into a **separate inference server** so:
+- The backend doesn't bear the model cold-start cost on every restart (~3-12s depending on device).
+- A single GPU pool serves multiple backend instances (the local-dev demo doesn't need it, but the same code wants to scale to a class deployment).
+- The backend process becomes CPU-only at the Python-deps layer — `torch` + `sentence-transformers` + `cross-encoder` move to the inference server's deps.
+
+The lazy-singleton-with-`device=` shape in v2.7 is the seam. Once the migration lands, the singletons become thin HTTP/gRPC clients; `resolve_device()` reports "remote" and the singletons report the remote's device in the trace. This is being scoped as a separate plan (working name: **Plan I — Inference Server Extraction**) and is not part of Plan C as-shipped. Mentioned here so a future archaeology dig hits the breadcrumb.
+
+### Quality gates after the v2.7 round
+
+From `backend/`:
+
+```powershell
+uv run pytest -v          # 249/250 (1 pre-existing flaky parallel-timing test, unrelated)
+uv run ruff check src tests
+uv run mypy src           # strict-clean across the new research_pipeline + _device modules
+.\scripts\smoke_mcp_papers.ps1
+.\scripts\smoke_mcp_web.ps1
+.\scripts\smoke_chat_real.ps1     # regression — vague-query path goes through new subgraph
+.\scripts\research_turn.ps1       # regression
+```
+
+Browser verification (manual, both daemons up):
+- Vague query *"that diffusion paper everyone cites"* → trace shows `paper_search:ps_parse` → `paper_search:ps_process:discover` (via `paperhub.search_web`, NOT `web.search` raw) → `paper_search:ps_process:resolve` (`papers.search_semantic_scholar` exactly once) → `paper_search:ps_finalize` (Python; no LLM call) → `paper_search:ps_synthesize` (prose). `json:candidates` block always present. Reference Sources drawer auto-refreshes with the resolved paper.
+- Multi-paper query *"compare the Mamba paper and the original transformer"* → Parser splits into 2 `ParsedRequest`s → 2 parallel `ps_process` branches via `asyncio.gather` → both resolve → Finalizer emits 2 candidates → Synthesizer prose names both.
+- Single-token cap-violating query (the v2.6 regression case): `MolmoACT2` → Discoverer's structured-output wrapper passes `paper_hint="MolmoACT2"` (no quotes possible) → DuckDuckGo returns the arxiv URL → Resolver gets a hit. No quoting failure.
+
+Browser verification (negative — Discoverer NotFound):
+- Made-up paper title → Parser parses → Discoverer 2 attempts → both NotFound → Resolver returns NotFound → Finalizer emits 0 candidates → Synthesizer prose explains "I couldn't find this. Try an arxiv ID or DOI." No silent failure, no crash.
+
+---
