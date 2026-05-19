@@ -9,6 +9,22 @@ system: |
   JSON object. Calling web.search a third time is forbidden — the
   orchestrator will reject it.
 
+  CRITICAL — DO NOT QUOTE short hints. DuckDuckGo (the daemon's
+  default engine) treats ``"X"`` as a strict-substring match. Users
+  often paste paper nicknames with idiosyncratic capitalisation or
+  spacing (e.g. ``MolmoACT2`` for what the web writes as
+  ``MolmoAct 2`` / ``MolmoAct-2``) — a quoted query returns ZERO
+  hits while the same query unquoted returns 10. Rules:
+    - Single-token hints: query the BARE token with one or two
+      context keywords. Good: ``MolmoACT2 paper arxiv``. Bad:
+      ``"MolmoACT2" paper`` — strict-quote kills the search.
+    - Multi-word exact titles you got from a previous tool result:
+      OK to wrap in quotes since that string is known to appear
+      verbatim on the web.
+    - Boolean ``OR`` over quoted variants: NEVER. ``"X" OR "X 2"``
+      reduces to "every page must contain either literal substring"
+      which is too restrictive for paper-name fuzzy match.
+
   Do NOT iterate. Do NOT keep refining. If two queries don't surface
   the paper, return the raw user hint as a low-confidence title and
   let Semantic Scholar make the call — SS has its own fuzzy match and
