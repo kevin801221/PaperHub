@@ -306,8 +306,14 @@ async def discover_canonical(
             tool_calls = msg.get("tool_calls") or []
             step.record_result(
                 {
-                    "had_tool_calls": bool(tool_calls),
-                    "content_len": len(msg.get("content") or ""),
+                    "content": msg.get("content") or "",
+                    "tool_calls": [
+                        {
+                            "name": c["function"]["name"],
+                            "arguments": c["function"]["arguments"],
+                        }
+                        for c in tool_calls
+                    ],
                 },
             )
 
@@ -336,11 +342,17 @@ async def discover_canonical(
                     except (MCPUnavailableError, MCPToolError) as exc:
                         result = {"error": str(exc), "tool": name}
                         step2.mark_error(str(exc))
-                    step2.record_result(
-                        {"summary": result}
-                        if isinstance(result, dict)
-                        else {"count": len(result)},
-                    )
+                    if isinstance(result, dict):
+                        step2.record_result({"summary": result})
+                    elif isinstance(result, list):
+                        # Keep the top 5 hits verbatim so post-hoc debug
+                        # can tell what the LLM actually saw. The
+                        # redactor walks nested structures.
+                        step2.record_result(
+                            {"count": len(result), "top": result[:5]},
+                        )
+                    else:
+                        step2.record_result({"value": result})
                 if name.startswith("web."):
                     web_calls += 1
             messages.append({
@@ -366,7 +378,7 @@ async def discover_canonical(
         step.record_args({"hint": request.hint, "web_calls": web_calls})
         response = await litellm.acompletion(model=model, messages=messages, **litellm_kwargs)
         content = str(response["choices"][0]["message"].get("content") or "").strip()
-        step.record_result({"content_len": len(content)})
+        step.record_result({"content": content})
     return _parse_canonical_identity(content)
 
 
@@ -441,7 +453,19 @@ async def resolve_via_ss(
     async with tracer.step(
         agent="research", tool="paper_search:resolve", model=None,
     ) as step:
-        step.record_args({"query": query, "request_kind": request.kind})
+        step.record_args(
+            {
+                "query": query,
+                "request_kind": request.kind,
+                "identity": {
+                    "title": identity.title,
+                    "author_surname": identity.author_surname,
+                    "year": identity.year,
+                    "confidence": identity.confidence,
+                    "rationale": identity.rationale,
+                },
+            },
+        )
         try:
             hits = await mcp_registry.call(
                 "papers.search_semantic_scholar",
@@ -451,16 +475,20 @@ async def resolve_via_ss(
             step.mark_error(str(exc))
             return None
         if not isinstance(hits, list) or not hits:
-            step.record_result({"hits": 0})
+            step.record_result({"hits": 0, "top": []})
             return None
         # Pick the top hit. SS's first result is usually the canonical
         # paper when the query is built from a canonical title.
         top = hits[0]
         pid = top.get("paper_id")
         if not isinstance(pid, str):
-            step.record_result({"hits": len(hits), "error": "missing_paper_id"})
+            step.record_result(
+                {"hits": len(hits), "error": "missing_paper_id", "top": hits[:5]},
+            )
             return None
-        step.record_result({"hits": len(hits), "picked": pid})
+        step.record_result(
+            {"hits": len(hits), "picked": pid, "top": hits[:5]},
+        )
     return ResolvedPaper(
         request=request,
         identity=identity,
@@ -519,5 +547,5 @@ async def synthesize_prose(
             model=model, messages=messages, **litellm_kwargs,
         )
         content = str(response["choices"][0]["message"].get("content") or "").strip()
-        step.record_result({"content_len": len(content)})
+        step.record_result({"content": content})
     return content

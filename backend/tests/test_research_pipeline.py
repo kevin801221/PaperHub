@@ -274,10 +274,73 @@ async def test_discover_returns_none_when_llm_says_not_found(
     assert out is None
 
 
-async def test_discover_returns_none_when_web_not_in_registry(
+async def test_discover_trace_records_full_context(
+    fake_tracer: Tracer,
+    migrated_db: aiosqlite.Connection,
+) -> None:
+    """The Discoverer's tracer rows must capture full LLM content +
+    tool-call list, AND the web.search result must record the actual
+    top-N hits (not just ``count``). Without this, post-hoc debugging
+    of a discovery loop is blind to what the LLM actually saw and
+    decided — which is exactly the regression run 65 surfaced."""
+    web_hit = {
+        "title": "Mamba: Linear-Time Sequence Modeling",
+        "url": "https://arxiv.org/abs/2312.00752",
+        "snippet": "Mamba is a state-space model with selective scans.",
+    }
+    reg = _StubRegistry(web_hits=[web_hit])
+    identity_json = json.dumps({
+        "title": "Mamba: Linear-Time Sequence Modeling with Selective State Spaces",
+        "author_surname": "Gu",
+        "year": 2023,
+        "confidence": "high",
+        "rationale": "Top hit names Gu & Dao 2023.",
+    })
+    seq = [
+        _msg(tool_calls=[_tool_call("c1", "web.search", {"query": "mamba paper"})]),
+        _msg(content=identity_json),
+    ]
+    comp = _async_completion_mock(seq)
+    with patch("paperhub.agents.research_pipeline.litellm.acompletion", new=comp):
+        out = await discover_canonical(
+            ParsedRequest(hint="mamba paper", kind="natural_language"),
+            tracer=fake_tracer, model="m", mcp_registry=reg,  # type: ignore[arg-type]
+        )
+    assert out is not None
+
+    rows: list[dict[str, Any]] = []
+    async with migrated_db.execute(
+        "SELECT tool, result_summary_json FROM tool_calls "
+        "WHERE run_id=1 ORDER BY step_index",
+    ) as cur:
+        async for r in cur:
+            rows.append({"tool": r[0], "result": json.loads(r[1] or "{}")})
+
+    plan_rows = [r for r in rows if r["tool"] == "paper_search:discover_plan"]
+    web_rows = [r for r in rows if r["tool"] == "paper_search:web.search"]
+
+    # discover_plan iteration 0: tool call recorded with its name + args.
+    assert plan_rows[0]["result"].get("tool_calls"), (
+        f"discover_plan must record the actual tool_calls; got {plan_rows[0]['result']!r}"
+    )
+    assert plan_rows[0]["result"]["tool_calls"][0]["name"] == "web.search"
+    # discover_plan iteration 1: full content from the LLM, not just length.
+    assert "Linear-Time" in plan_rows[1]["result"].get("content", ""), (
+        f"discover_plan finalize must record full content; got {plan_rows[1]['result']!r}"
+    )
+    # web.search row: top hits stored verbatim (not just count).
+    assert web_rows[0]["result"].get("top"), (
+        f"web.search must record top hits; got {web_rows[0]['result']!r}"
+    )
+    assert web_rows[0]["result"]["top"][0]["url"] == web_hit["url"]
+
+
+async def test_discover_falls_back_when_web_not_in_registry(
     fake_tracer: Tracer,
 ) -> None:
-    """No web.search → discover returns None without invoking the LLM."""
+    """No web.search → discover skips the LLM and returns a low-confidence
+    fallback CanonicalIdentity built from the raw hint, so the Resolver
+    still gets a chance to land the paper via Semantic Scholar."""
     reg = _StubRegistry(has_web_search=False)
     comp = AsyncMock()
     with patch("paperhub.agents.research_pipeline.litellm.acompletion", new=comp):
@@ -285,7 +348,9 @@ async def test_discover_returns_none_when_web_not_in_registry(
             ParsedRequest(hint="mamba", kind="natural_language"),
             tracer=fake_tracer, model="m", mcp_registry=reg,  # type: ignore[arg-type]
         )
-    assert out is None
+    assert out is not None
+    assert out.title == "mamba"
+    assert out.confidence == "low"
     assert comp.await_count == 0
 
 
