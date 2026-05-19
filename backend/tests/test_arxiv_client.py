@@ -435,14 +435,101 @@ def test_download_arxiv_source_skips_on_partial_drop_for_fallback(
 
     with pytest.raises(httpx.RemoteProtocolError):
         download_arxiv_source("2503.00099", cache_root=tmp_path / "cache")
-    assert call_count["n"] == 1, (
-        f"size-cap pattern must skip immediately to fallback; "
-        f"got {call_count['n']} attempts"
+    # Size-cap on export mirror promotes to arxiv.org/src/ (the main
+    # mirror, no per-connection cap). Both mirrors hit the same stub
+    # here so both fail-fast → 2 total HTTP attempts before raising
+    # to the caller for PDF fallback.
+    assert call_count["n"] == 2, (
+        f"size-cap pattern must try export then arxiv.org main mirror "
+        f"before raising; got {call_count['n']} attempts"
     )
-    # Partial bytes are kept on disk for diagnostic / cache purposes.
+    # Partial bytes from the LAST attempt (arxiv.org) are kept on
+    # disk. The export-mirror partial was wiped during the mirror
+    # promotion so the main-mirror download could start clean.
     partial = tmp_path / "cache" / "2503.00099" / "2503.00099.tar.gz"
     assert partial.exists()
     assert partial.stat().st_size == len(first_chunk)
+
+
+def test_download_arxiv_source_promotes_to_main_mirror_on_export_size_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: when export.arxiv.org drops the connection
+    mid-stream (its per-connection size cap on large papers), the
+    downloader must retry against the main `arxiv.org/src/` mirror
+    which doesn't impose the same cap. This is what lets big papers
+    (40+ MB e-prints like MolmoACT2) ingest end-to-end without
+    falling all the way back to PDF."""
+    src_text = r"\documentclass{article}\begin{document}Big paper\end{document}"
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        info = tarfile.TarInfo(name="main.tex")
+        info.size = len(src_text)
+        tar.addfile(info, io.BytesIO(src_text.encode("utf-8")))
+    tarball_bytes = buf.getvalue()
+    split = max(1, len(tarball_bytes) // 3)
+    first_chunk = tarball_bytes[:split]
+
+    seen_urls: list[str] = []
+
+    class _ExportStream:
+        """First mirror: drops mid-stream like export.arxiv.org."""
+        status_code = 200
+
+        def __enter__(self) -> "_ExportStream":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_bytes(self) -> object:
+            def gen() -> object:
+                yield first_chunk
+                raise httpx.RemoteProtocolError("mid-stream drop")
+            return gen()
+
+    class _MainStream:
+        """Main mirror: serves the full tarball."""
+        status_code = 200
+
+        def __enter__(self) -> "_MainStream":
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def iter_bytes(self) -> object:
+            return iter([tarball_bytes])
+
+    def _fake_stream(*args: object, **_kwargs: object) -> object:
+        url = args[1] if len(args) > 1 else ""
+        seen_urls.append(str(url))
+        if "export.arxiv.org" in str(url):
+            return _ExportStream()
+        return _MainStream()
+
+    monkeypatch.setattr(
+        "paperhub.pipelines.arxiv_client.httpx.stream", _fake_stream,
+    )
+
+    source_dir = download_arxiv_source(
+        "2503.00200", cache_root=tmp_path / "cache",
+    )
+    # Export tried first, then main mirror.
+    assert len(seen_urls) == 2
+    assert "export.arxiv.org" in seen_urls[0]
+    assert seen_urls[1] == "https://arxiv.org/src/2503.00200"
+    assert "export.arxiv.org" not in seen_urls[1]
+    # Tarball reconstructed + extracted from the main-mirror response.
+    assert (source_dir / "main.tex").exists()
+    assert (source_dir / "main.tex").read_text(encoding="utf-8") == src_text
 
 
 def test_download_arxiv_source_resumes_across_separate_invocations(

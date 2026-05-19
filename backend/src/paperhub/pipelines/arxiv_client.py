@@ -279,8 +279,26 @@ def download_arxiv_pdf(arxiv_id: str, *, cache_root: Path) -> Path:
     target_dir = cache_root / arxiv_id
     target_dir.mkdir(parents=True, exist_ok=True)
     pdf_path = target_dir / "source.pdf"
-    pdf_url = f"https://export.arxiv.org/pdf/{arxiv_id}"
-    _download_with_resume(pdf_url, pdf_path)
+    # Same export → main mirror promotion as download_arxiv_source.
+    # The export mirror caps PDF transfers too (observed: 1-2 MB drop
+    # on the 27 MB MolmoACT2 PDF); the main site doesn't.
+    try:
+        _download_with_resume(
+            f"https://export.arxiv.org/pdf/{arxiv_id}", pdf_path,
+        )
+    except httpx.RemoteProtocolError:
+        new_bytes = pdf_path.stat().st_size if pdf_path.exists() else 0
+        if new_bytes <= 0:
+            raise
+        logger.warning(
+            "arxiv PDF export-mirror size-cap hit for %s (%d bytes "
+            "received); retrying via main arxiv.org/pdf/",
+            arxiv_id, new_bytes,
+        )
+        pdf_path.unlink(missing_ok=True)
+        _download_with_resume(
+            f"https://arxiv.org/pdf/{arxiv_id}", pdf_path,
+        )
     return pdf_path
 
 
@@ -294,20 +312,46 @@ def download_arxiv_source(arxiv_id: str, *, cache_root: Path) -> Path:
     source_dir = target_dir / "source"
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build the source URL directly from the arxiv_id.  The URL is
-    # deterministic: https://export.arxiv.org/src/<arxiv_id>.
-    # Use export.arxiv.org per arXiv's programmatic-access policy
-    # (https://info.arxiv.org/help/robots.html): the export mirror is set
-    # aside for programmatic harvesting so the main site stays responsive
-    # for interactive readers.
-    src_url = f"https://export.arxiv.org/src/{arxiv_id}"
-
-    # Resume-capable downloader: across attempts, partial bytes are KEPT
-    # and continued via Range requests rather than re-fetched from byte
-    # 0. Critical for big papers (40+ MB e-prints) where export.arxiv
-    # drops connections under load.
+    # arxiv hosts the e-print at TWO mirrors that we try in order:
+    #
+    #   1. https://export.arxiv.org/src/<id>   (preferred — programmatic
+    #      policy mirror, https://info.arxiv.org/help/robots.html). For
+    #      most papers (sub-30 MB) this is fast + reliable.
+    #   2. https://arxiv.org/src/<id>          (fallback for big papers).
+    #      The export mirror caps per-connection delivery and drops
+    #      large transfers mid-stream (observed empirically: 8 MB cap
+    #      on arxiv:2605.02881 which is 41 MB). The main site doesn't
+    #      have the same cap; live testing confirmed it serves the
+    #      full 41 MB without dropping.
+    #
+    # We promote to mirror #2 ONLY on the size-cap signature
+    # (RemoteProtocolError with bytes received). Other transient errors
+    # stay on the export mirror — they're not size-related and
+    # bouncing to the main site doesn't help, just adds load there.
     tar_path = target_dir / f"{arxiv_id}.tar.gz"
-    _download_with_resume(src_url, tar_path)
+    try:
+        _download_with_resume(
+            f"https://export.arxiv.org/src/{arxiv_id}", tar_path,
+        )
+    except httpx.RemoteProtocolError:
+        new_bytes = tar_path.stat().st_size if tar_path.exists() else 0
+        if new_bytes <= 0:
+            # No bytes received → not a size-cap; transport failure.
+            # Don't bounce to the main site; raise to caller for PDF
+            # fallback.
+            raise
+        logger.warning(
+            "arxiv source export-mirror size-cap hit for %s (%d bytes "
+            "received); retrying via main arxiv.org/src/ which does "
+            "not impose the same per-connection cap",
+            arxiv_id, new_bytes,
+        )
+        # Wipe the partial bytes — different server, no point sending
+        # a Range header pointing at export.arxiv.org's offset.
+        tar_path.unlink(missing_ok=True)
+        _download_with_resume(
+            f"https://arxiv.org/src/{arxiv_id}", tar_path,
+        )
 
     source_dir.mkdir(parents=True, exist_ok=True)
     # Resolve once so we can sanity-check that every extracted member stays

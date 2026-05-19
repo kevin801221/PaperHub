@@ -10,6 +10,14 @@ from typing import cast
 import chromadb
 import numpy as np
 
+# Chroma's rust binding caps a single .add() call at 5461 records per
+# batch (observed empirically: 29891 chunks for MolmoACT2 → InternalError
+# "Batch size of 29891 is greater than max batch size of 5461"). We
+# split client-side to stay below this. Keeping a buffer (4096) below
+# the observed cap protects against minor cap changes between Chroma
+# versions.
+_MAX_BATCH = 4096
+
 
 @dataclass(frozen=True)
 class ChunkSearchResult:
@@ -35,14 +43,25 @@ class ChromaStore:
         texts: list[str],
         embeddings: np.ndarray,
     ) -> None:
-        if len(chunk_ids) == 0:
+        n = len(chunk_ids)
+        if n == 0:
             return
-        self._coll.add(
-            ids=[str(cid) for cid in chunk_ids],
-            documents=texts,
-            embeddings=embeddings.tolist(),
-            metadatas=[{"paper_content_id": paper_content_id} for _ in chunk_ids],
-        )
+        # Split into ``_MAX_BATCH``-sized slices to stay under Chroma's
+        # per-call cap. Most papers fit in one batch (a few hundred to
+        # ~2000 chunks); large papers like MolmoACT2 produced 29891
+        # chunks which is well over the 5461 cap.
+        embeddings_list = embeddings.tolist()
+        for start in range(0, n, _MAX_BATCH):
+            end = min(start + _MAX_BATCH, n)
+            self._coll.add(
+                ids=[str(cid) for cid in chunk_ids[start:end]],
+                documents=texts[start:end],
+                embeddings=embeddings_list[start:end],
+                metadatas=[
+                    {"paper_content_id": paper_content_id}
+                    for _ in range(end - start)
+                ],
+            )
 
     def delete_paper(self, paper_content_id: int) -> None:
         """Remove every chunk vector belonging to `paper_content_id`.
