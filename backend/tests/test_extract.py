@@ -6,6 +6,7 @@ import pytest
 
 from paperhub.pipelines.extract import (
     _extract_pdf_metadata,
+    _extract_pdf_title_from_page1,
     extract_latex,
     extract_pdf,
 )
@@ -17,10 +18,21 @@ def _build_pdf(
     title: str | None = None,
     author: str | None = None,
     creation_year: int | None = None,
+    page1_lines: list[tuple[str, float]] | None = None,
 ) -> Path:
-    """Build a 1-page PDF with optional embedded metadata fields."""
+    """Build a 1-page PDF with optional embedded metadata fields.
+
+    ``page1_lines`` is an optional list of ``(text, font_size)`` tuples
+    rendered top-to-bottom on page 1 — used to exercise the page-1
+    largest-font title-recovery heuristic.
+    """
     doc = pymupdf.open()  # type: ignore[no-untyped-call]
-    doc.new_page()
+    page = doc.new_page()
+    if page1_lines:
+        y = 72.0
+        for text, size in page1_lines:
+            page.insert_text((72, y), text, fontsize=size)
+            y += size + 8  # advance below the line
     md: dict[str, str | None] = {
         "format": "PDF 1.7",
         "title": "",
@@ -209,3 +221,88 @@ def test_extract_pdf_metadata_handles_empty_pdf(tmp_path: Path) -> None:
     assert md["title"] == ""
     assert md["authors"] == []
     assert md["year"] is None
+
+
+# ---------------------------------------------------------------------------
+# _extract_pdf_title_from_page1 — page-1 largest-font fallback tests
+# ---------------------------------------------------------------------------
+
+
+def test_page1_heuristic_extracts_largest_font_text(tmp_path: Path) -> None:
+    p = _build_pdf(
+        tmp_path,
+        page1_lines=[
+            ("YOLOSeg for wafer defect segmentation", 26),
+            ("Yen-Ting Li, Yu-Cheng Chan", 10),
+            ("This study develops the you only look once...", 9),
+        ],
+    )
+    title = _extract_pdf_title_from_page1(p)
+    assert title == "YOLOSeg for wafer defect segmentation"
+
+
+def test_page1_heuristic_joins_multi_line_titles(tmp_path: Path) -> None:
+    p = _build_pdf(
+        tmp_path,
+        page1_lines=[
+            ("YOLOSeg with applications", 26),
+            ("to wafer die particle defect segmentation", 26),
+            ("Abstract: ...", 9),
+        ],
+    )
+    title = _extract_pdf_title_from_page1(p)
+    assert title == (
+        "YOLOSeg with applications to wafer die particle defect segmentation"
+    )
+
+
+def test_page1_heuristic_returns_empty_when_no_text(tmp_path: Path) -> None:
+    p = _build_pdf(tmp_path)  # no page1_lines, no metadata
+    assert _extract_pdf_title_from_page1(p) == ""
+
+
+def test_page1_heuristic_runs_through_sanitiser(tmp_path: Path) -> None:
+    # "Untitled" at the largest font should still be rejected by the
+    # placeholder sanitiser.
+    p = _build_pdf(
+        tmp_path,
+        page1_lines=[
+            ("Untitled", 26),
+            ("body text", 10),
+        ],
+    )
+    assert _extract_pdf_title_from_page1(p) == ""
+
+
+def test_extract_pdf_metadata_falls_back_to_page1_when_metadata_title_missing(
+    tmp_path: Path,
+) -> None:
+    # Empty metadata title, but a clear page-1 title at large font.
+    p = _build_pdf(
+        tmp_path,
+        title="",  # explicit empty
+        author="A. Smith",
+        creation_year=2025,
+        page1_lines=[
+            ("Recovered Title From Page One", 24),
+            ("authors here", 10),
+            ("body", 9),
+        ],
+    )
+    md = _extract_pdf_metadata(p)
+    assert md["title"] == "Recovered Title From Page One"
+    # Other fields still come from the embedded metadata.
+    assert md["authors"] == ["A. Smith"]
+    assert md["year"] == 2025
+
+
+def test_extract_pdf_metadata_prefers_metadata_title_over_page1_when_both_present(
+    tmp_path: Path,
+) -> None:
+    p = _build_pdf(
+        tmp_path,
+        title="Title From Metadata",
+        page1_lines=[("Different Title On Page One", 26)],
+    )
+    md = _extract_pdf_metadata(p)
+    assert md["title"] == "Title From Metadata"  # metadata wins
