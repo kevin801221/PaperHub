@@ -145,8 +145,8 @@ export async function deleteLibraryPaper(
   throw new Error(`API ${res.status}: ${text}`);
 }
 
-const ARXIV_NEW = /^(\d{4}\.\d{4,5})(v\d+)?$/;
-const ARXIV_OLD = /^([a-z-]+(\.[A-Z]{2})?\/\d{7})(v\d+)?$/;
+const ARXIV_NEW = /^(\d{4}\.\d{4,5})(v\d+)?$/i;
+const ARXIV_OLD = /^([a-z-]+(\.[A-Z]{2})?\/\d{7})(v\d+)?$/i;
 
 /** Normalise user-supplied arXiv input to canonical `arxiv:<id>` form, or
  * null if it doesn't look like an arXiv identifier. Accepts bare IDs,
@@ -156,7 +156,9 @@ export function parseArxivId(input: string): string | null {
   let s = input.trim();
   if (!s) return null;
   // Strip URL forms first.
-  const urlMatch = s.match(/arxiv\.org\/(?:abs|pdf)\/([^?#]+?)(?:\.pdf)?$/i);
+  const urlMatch = s.match(
+    /arxiv\.org\/(?:abs|pdf)\/([^?#\s]+?)(?:\.pdf)?(?:[?#]|$)/i,
+  );
   if (urlMatch && urlMatch[1]) s = urlMatch[1];
   // Strip arxiv: prefix.
   s = s.replace(/^arxiv:/i, "");
