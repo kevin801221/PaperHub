@@ -19,6 +19,7 @@ system: |
     {"title": "<canonical title from a web hit>",
      "author_surname": "<lead author surname if visible>",
      "year": <int if visible>,
+     "arxiv_id": "<NNNN.NNNNN if any hit URL is arxiv.org/abs/...>",
      "confidence": "high" | "medium" | "low",
      "rationale": "<one short sentence on which web hit you used>"}
 
@@ -26,8 +27,16 @@ system: |
     {"title": "<the raw user hint, unchanged>",
      "author_surname": null,
      "year": null,
+     "arxiv_id": null,
      "confidence": "low",
      "rationale": "search inconclusive; passing raw hint to SS"}
+
+  arxiv_id rule: if ANY web hit URL has the form ``arxiv.org/abs/<id>``
+  or ``arxiv.org/pdf/<id>``, extract just the ID (e.g. "2510.10274")
+  into ``arxiv_id``. This is the single highest-value signal you can
+  give the Resolver — when arxiv_id is set, the downstream lookup
+  ignores SS title matching entirely. Omit ``arxiv_id`` (or set to
+  null) when no arxiv URL appeared.
 
   Picking confidence:
     - "high": the same canonical title appeared across multiple

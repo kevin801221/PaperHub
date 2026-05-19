@@ -411,6 +411,90 @@ async def test_resolver_returns_none_when_ss_empty(
     assert len(ss_calls) == 1
 
 
+async def test_resolver_uses_arxiv_id_when_present(
+    fake_tracer: Tracer,
+) -> None:
+    """When the Discoverer extracted an arxiv ID, the Resolver queries
+    SS with ``arXiv:<id>`` (much more reliable than title match) and
+    returns the SS hit on success."""
+    reg = _StubRegistry(ss_hits=[
+        {"paper_id": "arxiv:2510.10274", "title": "X-VLA",
+         "year": 2025, "arxiv_id": "2510.10274"},
+    ])
+    identity = CanonicalIdentity(
+        title="X-VLA: Soft-Prompted Transformer …",
+        author_surname="Zheng", year=2025, confidence="high",
+        arxiv_id="2510.10274",
+    )
+    out = await resolve_via_ss(
+        ParsedRequest(hint="X-VLA", kind="natural_language"),
+        identity, tracer=fake_tracer, mcp_registry=reg,  # type: ignore[arg-type]
+    )
+    assert out is not None
+    assert out.paper_id == "arxiv:2510.10274"
+    # SS was called with the arxiv-id query shape.
+    assert reg.call_log[0][1]["query"] == "arXiv:2510.10274"
+
+
+async def test_resolver_synthesises_when_ss_misses_known_arxiv_id(
+    fake_tracer: Tracer,
+) -> None:
+    """The headline new behaviour: when the Discoverer knows the arxiv
+    ID (from a web hit URL) but SS hasn't indexed the paper yet, the
+    Resolver synthesises a ResolvedPaper from the identity itself so
+    the downstream arxiv-ingest path can still land it. Critical for
+    very-new papers that aren't in SS's index."""
+    reg = _StubRegistry(ss_hits=[])  # SS misses
+    identity = CanonicalIdentity(
+        title="X-VLA: Soft-Prompted Transformer …",
+        author_surname="Zheng", year=2025, confidence="high",
+        arxiv_id="2510.10274",
+    )
+    out = await resolve_via_ss(
+        ParsedRequest(hint="X-VLA", kind="natural_language"),
+        identity, tracer=fake_tracer, mcp_registry=reg,  # type: ignore[arg-type]
+    )
+    assert out is not None, "synthesised ResolvedPaper expected on SS miss"
+    assert out.paper_id == "arxiv:2510.10274"
+    assert out.meta["arxiv_id"] == "2510.10274"
+    assert out.meta["title"] == identity.title
+    assert out.meta["has_open_pdf"] is True
+
+
+async def test_resolver_extracts_arxiv_id_from_evidence_safety_net(
+    fake_tracer: Tracer,
+) -> None:
+    """If the LLM forgets to emit ``arxiv_id`` but the tool messages
+    contained an arxiv URL, the server-side parser must extract it
+    anyway. This is the safety net that prevents an LLM lapse from
+    costing us the arxiv-id resolution path."""
+    reg = _StubRegistry(web_hits=[
+        {"title": "X-VLA paper",
+         "url": "https://arxiv.org/abs/2510.10274",
+         "snippet": "X-VLA on arxiv"},
+    ])
+    # LLM emits identity JSON WITHOUT arxiv_id field.
+    identity_json = json.dumps({
+        "title": "X-VLA",
+        "author_surname": "Zheng", "year": 2025, "confidence": "high",
+        "rationale": "found on arxiv",
+    })
+    seq = [
+        _msg(tool_calls=[_tool_call("c1", "web.search", {"query": "X-VLA"})]),
+        _msg(content=identity_json),
+    ]
+    comp = _async_completion_mock(seq)
+    with patch("paperhub.agents.research_pipeline.litellm.acompletion", new=comp):
+        out = await discover_canonical(
+            ParsedRequest(hint="X-VLA", kind="natural_language"),
+            tracer=fake_tracer, model="m", mcp_registry=reg,  # type: ignore[arg-type]
+        )
+    assert out is not None
+    assert out.arxiv_id == "2510.10274", (
+        f"safety net must mine arxiv ID from tool-message URL; got {out!r}"
+    )
+
+
 # ─────────────────────────── Synthesizer ────────────────────────────
 
 

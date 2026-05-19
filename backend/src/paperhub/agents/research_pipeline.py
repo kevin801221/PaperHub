@@ -198,6 +198,13 @@ class CanonicalIdentity:
     (good input for SS). ``author_surname`` + ``year`` are extra
     signal the Resolver can use to disambiguate. ``confidence`` lets
     the Resolver decide how aggressively to try variants.
+
+    ``arxiv_id`` is populated when the Discoverer found an
+    ``arxiv.org/abs/<id>`` URL among its web hits. The Resolver uses
+    this to query SS by arxiv-id directly (much more reliable than
+    title match) AND, when SS still misses (e.g. paper not yet
+    indexed), to synthesize a ResolvedPaper from the identity alone
+    so the downstream arxiv-ingest path can land the paper anyway.
     """
 
     title: str
@@ -206,6 +213,7 @@ class CanonicalIdentity:
     confidence: Literal["high", "medium", "low"]
     # Optional: a short justification we surface in the trace.
     rationale: str = ""
+    arxiv_id: str | None = None
 
 
 async def discover_canonical(
@@ -325,7 +333,12 @@ async def discover_canonical(
 
         if not tool_calls:
             content = str(msg.get("content") or "").strip()
-            return _parse_canonical_identity(content)
+            evidence = "\n".join(
+                str(m.get("content") or "")
+                for m in messages
+                if m.get("role") == "tool"
+            )
+            return _parse_canonical_identity(content, evidence_text=evidence)
 
         messages.append({
             "role": "assistant",
@@ -385,11 +398,38 @@ async def discover_canonical(
         response = await litellm.acompletion(model=model, messages=messages, **litellm_kwargs)
         content = str(response["choices"][0]["message"].get("content") or "").strip()
         step.record_result({"content": content})
-    return _parse_canonical_identity(content)
+    evidence = "\n".join(
+        str(m.get("content") or "")
+        for m in messages
+        if m.get("role") == "tool"
+    )
+    return _parse_canonical_identity(content, evidence_text=evidence)
 
 
-def _parse_canonical_identity(content: str) -> CanonicalIdentity | None:
-    """Pull a JSON object out of the Discoverer's final message."""
+_ARXIV_URL_RE = re.compile(
+    r"arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5})(?:v\d+)?", re.IGNORECASE,
+)
+
+
+def _extract_arxiv_id_from_text(text: str) -> str | None:
+    """Server-side safety net: pull an arxiv ID out of any arxiv URL
+    present in ``text``. Used when the LLM forgot to include
+    ``arxiv_id`` in its JSON output even though the web hits contained
+    one."""
+    m = _ARXIV_URL_RE.search(text)
+    return m.group(1) if m else None
+
+
+def _parse_canonical_identity(
+    content: str, *, evidence_text: str = "",
+) -> CanonicalIdentity | None:
+    """Pull a JSON object out of the Discoverer's final message.
+
+    ``evidence_text`` is the concatenation of tool-message contents the
+    Discoverer saw — we mine it for an arxiv ID as a server-side
+    safety net so the LLM forgetting to include ``arxiv_id`` doesn't
+    cost us a lookup-by-id path.
+    """
     m = re.search(r"\{.*\}", content, re.DOTALL)
     if not m:
         return None
@@ -405,6 +445,19 @@ def _parse_canonical_identity(content: str) -> CanonicalIdentity | None:
     confidence = data.get("confidence", "medium")
     if confidence not in ("high", "medium", "low"):
         confidence = "medium"
+    # arxiv_id resolution: prefer the LLM's explicit field, fall back
+    # to scanning the evidence text for an arxiv URL.
+    arxiv_id: str | None = None
+    raw_arxiv = data.get("arxiv_id")
+    if isinstance(raw_arxiv, str) and raw_arxiv.strip():
+        # Accept either "2510.10274" or a full arxiv URL.
+        m_url = _ARXIV_URL_RE.search(raw_arxiv)
+        if m_url:
+            arxiv_id = m_url.group(1)
+        elif re.fullmatch(r"\d{4}\.\d{4,5}", raw_arxiv.strip()):
+            arxiv_id = raw_arxiv.strip()
+    if arxiv_id is None and evidence_text:
+        arxiv_id = _extract_arxiv_id_from_text(evidence_text)
     return CanonicalIdentity(
         title=title.strip(),
         author_surname=str(data["author_surname"]).strip()
@@ -413,6 +466,7 @@ def _parse_canonical_identity(content: str) -> CanonicalIdentity | None:
             if isinstance(data.get("year"), int) else None,
         confidence=confidence,
         rationale=str(data.get("rationale", "") or ""),
+        arxiv_id=arxiv_id,
     )
 
 
@@ -437,40 +491,94 @@ async def resolve_via_ss(
     tracer: Tracer,
     mcp_registry: MCPRegistry,
 ) -> ResolvedPaper | None:
-    """Call ``papers.search_semantic_scholar`` EXACTLY ONCE with the
-    canonical title and return the first usable hit.
+    """Resolve ``identity`` to a ResolvedPaper, ideally via Semantic
+    Scholar but falling back to arxiv when SS misses.
 
-    The "exactly once" property is architectural (this function makes
-    one call), not a prompt rule. No LLM is involved at this stage —
-    the query is deterministic from the identity.
+    Strategy (deterministic — no LLM):
+
+    1. If ``identity.arxiv_id`` is set, query SS with ``arXiv:<id>``
+       (much more reliable than title match). If SS hits → use SS meta.
+       If SS misses → SYNTHESISE a ResolvedPaper from the identity
+       itself with ``paper_id = "arxiv:<id>"``; the downstream Paper
+       Pipeline ingests via the arxiv path anyway, so SS isn't a
+       gatekeeper. This is the key fix for very-new papers that
+       aren't yet in SS's index.
+
+    2. Else (title-only), query SS with the canonical title. On miss,
+       return None (NotFound).
+
+    No outer loop, no LLM — at most two SS calls.
     """
-    # Build the SS query. Prefer "<author surname> <year> <title>" when
-    # we have all three (matches how SS indexes); fall back to bare title.
-    query_parts: list[str] = []
-    if identity.author_surname:
-        query_parts.append(identity.author_surname)
-    if identity.year:
-        query_parts.append(str(identity.year))
-    query_parts.append(identity.title)
-    query = " ".join(query_parts)
-
-    # ArXiv IDs / DOIs skip Discover and pass through to here with the
-    # raw id as `identity.title`. SS accepts the raw id as a query.
+    # Trace args + identity snapshot.
     async with tracer.step(
         agent="research", tool="paper_search:resolve", model=None,
     ) as step:
-        step.record_args(
-            {
-                "query": query,
-                "request_kind": request.kind,
-                "identity": {
-                    "title": identity.title,
-                    "author_surname": identity.author_surname,
-                    "year": identity.year,
-                    "confidence": identity.confidence,
-                    "rationale": identity.rationale,
+        identity_snapshot = {
+            "title": identity.title,
+            "author_surname": identity.author_surname,
+            "year": identity.year,
+            "confidence": identity.confidence,
+            "rationale": identity.rationale,
+            "arxiv_id": identity.arxiv_id,
+        }
+
+        # Path 1: arxiv_id known → try SS by arxiv-id, then synthesise on miss.
+        if identity.arxiv_id:
+            query = f"arXiv:{identity.arxiv_id}"
+            step.record_args(
+                {"query": query, "request_kind": request.kind, "identity": identity_snapshot},
+            )
+            try:
+                hits = await mcp_registry.call(
+                    "papers.search_semantic_scholar",
+                    {"query": query, "max_results": 5},
+                )
+            except (MCPUnavailableError, MCPToolError) as exc:
+                step.mark_error(str(exc))
+                hits = []
+            if isinstance(hits, list) and hits:
+                top = hits[0]
+                pid = top.get("paper_id")
+                if isinstance(pid, str):
+                    step.record_result(
+                        {"hits": len(hits), "picked": pid, "top": hits[:5], "source": "ss_by_arxiv_id"},
+                    )
+                    return ResolvedPaper(
+                        request=request, identity=identity, paper_id=pid, meta=top,
+                    )
+            # SS missed an arxiv-id we trust — synthesise.
+            synthetic_pid = f"arxiv:{identity.arxiv_id}"
+            synthetic_meta: dict[str, Any] = {
+                "title": identity.title,
+                "arxiv_id": identity.arxiv_id,
+                "year": identity.year,
+                "authors": [identity.author_surname] if identity.author_surname else [],
+                "abstract": None,
+                "has_open_pdf": True,  # arxiv URLs always have an open PDF
+            }
+            step.record_result(
+                {
+                    "hits": 0,
+                    "top": [],
+                    "source": "synthesised_from_arxiv_url",
+                    "synthetic_paper_id": synthetic_pid,
                 },
-            },
+            )
+            return ResolvedPaper(
+                request=request, identity=identity,
+                paper_id=synthetic_pid, meta=synthetic_meta,
+            )
+
+        # Path 2: no arxiv_id → title-only SS search.
+        query_parts: list[str] = []
+        if identity.author_surname:
+            query_parts.append(identity.author_surname)
+        if identity.year:
+            query_parts.append(str(identity.year))
+        query_parts.append(identity.title)
+        query = " ".join(query_parts)
+        step.record_args(
+            {"query": query, "request_kind": request.kind, "identity": identity_snapshot},
         )
         try:
             hits = await mcp_registry.call(
@@ -481,10 +589,8 @@ async def resolve_via_ss(
             step.mark_error(str(exc))
             return None
         if not isinstance(hits, list) or not hits:
-            step.record_result({"hits": 0, "top": []})
+            step.record_result({"hits": 0, "top": [], "source": "ss_by_title"})
             return None
-        # Pick the top hit. SS's first result is usually the canonical
-        # paper when the query is built from a canonical title.
         top = hits[0]
         pid = top.get("paper_id")
         if not isinstance(pid, str):
@@ -493,13 +599,10 @@ async def resolve_via_ss(
             )
             return None
         step.record_result(
-            {"hits": len(hits), "picked": pid, "top": hits[:5]},
+            {"hits": len(hits), "picked": pid, "top": hits[:5], "source": "ss_by_title"},
         )
     return ResolvedPaper(
-        request=request,
-        identity=identity,
-        paper_id=pid,
-        meta=top,
+        request=request, identity=identity, paper_id=pid, meta=top,
     )
 
 
