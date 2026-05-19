@@ -3633,3 +3633,800 @@ Manual smoke verifying detach: spawn modelserver via `ensure_running`, exit the 
 - Modify: [`backend/tests/conftest.py`](../../../backend/tests/conftest.py) — `PAPERHUB_INPROCESS_MODELS=1` + autouse singleton-reset fixture.
 
 ---
+
+## Plan C v2.9 — Frontend PDF upload + arXiv-ID manual import (follow-up round)
+
+**Why this is still a Plan C item, not a Plan D bullet.** The "Attach paper" affordance was scoped into Plan C in two of the SRS use cases (UC-2 v2.3: "Add-as-reference … manual"; I-8 #2: "re-ingest hits the cache"), and the Paper Pipeline already supports PDF ingestion end-to-end via `IngestRequest(upload_path=..., upload_kind="pdf")` → `sha256:<hex>` content_key → `kind="pdf_upload"` row → chunks + Chroma vectors + rendered HTML. What is missing is purely a transport gap (no multipart HTTP endpoint) and a UI gap (the Composer's paperclip icon ships as a disabled placeholder with tooltip "Coming in Plan C — upload PDF or paste arXiv ID"). Closing that gap is a single round, not a plan-sized surface — it does not need a new package, a schema change, or any agent-side logic. Plan D's reference-panel/canvas work is unblocked either way; this round just finishes the user-facing entry point that Plan C promised.
+
+### What the backend already does (no change needed for these)
+
+- `PaperPipeline._ingest_upload(req, content_key)` — full pipeline path for `kind="pdf" | "latex"` uploads. Hashes the file content, writes it under `workspace/papers_cache/upload/<sha>/`, extracts text via `pymupdf` for PDFs (or LaTeX flattener for `.tex` trees), chunks + embeds + renders HTML, and writes one `paper_content` row + `chunks` rows + Chroma vectors in a single transaction.
+- `compute_content_key(upload_path=...)` — streams the file in 1 MiB blocks; same `sha256:<hex>` produces a cache hit on re-upload of the same bytes. The cache hit short-circuits before extract/chunk/embed.
+- arXiv-ID manual entry is already a no-op on the backend: `POST /papers {paper_id: "arxiv:<id>"}` routes through `add_paper_to_session_dispatch` → `_ingest_arxiv` (LaTeX path, with the v2.7 size-cap PDF fallback already in place from commit 3d34beb).
+
+### Gap 1 — `POST /papers/upload` (multipart) is missing
+
+`add_paper_to_session_dispatch(paper_id, ...)` is keyed off a `paper_id` *string* with one of three prefixes (`arxiv:`, `ss:`, `library:`); there is no fourth `upload:` branch and adding one would be wrong (the dispatcher's whole point is that the LLM's tool-arg surface is a string ID — file bytes do not belong there). The deterministic UI ingest path must bypass the dispatcher and call `PaperPipeline.ingest()` directly with `IngestRequest(upload_path=..., upload_kind="pdf")`.
+
+### Gap 2 — Composer paperclip icon is disabled
+
+[`frontend/src/components/chat/Composer.tsx:31-35`](../../../frontend/src/components/chat/Composer.tsx) ships the paperclip button as `disabled className="pointer-events-none"` with the tooltip "Coming in Plan C". The other three Plan C/D/F/G placeholders stay disabled (they're genuinely scoped to later plans), but the paperclip one is the Plan C surface and needs to become a working menu.
+
+### Architecture
+
+One new endpoint and one new frontend component (popover anchored on the paperclip button), plus thin API-client + store wiring.
+
+**Backend:**
+
+| File | Role |
+| --- | --- |
+| `backend/src/paperhub/api/papers.py` | Add `POST /papers/upload` accepting `multipart/form-data` with two fields: `session_id` (int) and `file` (UploadFile). Validates MIME (`application/pdf` only for v2.9 — `.tex` upload deferred to v3.x), enforces a 30 MiB ceiling (`PAPERHUB_MAX_UPLOAD_MB` env, default `30`), streams the body to a tempfile, then calls `PaperPipeline.ingest(IngestRequest(session_id=..., upload_path=tmp, upload_kind="pdf"))`. Returns the existing `IngestResponse` Pydantic model — frontend already consumes that shape. Cleans up the tempfile in a `finally` (cache lookup may short-circuit before extract, but the tempfile must still go). |
+| `backend/src/paperhub/config.py` | Add `max_upload_mb: int` to `Settings` (default 30, from `PAPERHUB_MAX_UPLOAD_MB`). |
+| `backend/.env.example` | Document `PAPERHUB_MAX_UPLOAD_MB=30`. |
+
+**Frontend:**
+
+| File | Role |
+| --- | --- |
+| `frontend/src/lib/api.ts` | Add `uploadPdf(sessionId, file)` — `FormData` POST to `/papers/upload`, returns `IngestResult`. Also export `parseArxivId(input)` (pure helper): accepts `2310.06825`, `arxiv:2310.06825`, full URL forms (`https://arxiv.org/abs/2310.06825v1`, `https://arxiv.org/pdf/2310.06825.pdf`), strips `vN` suffix, returns canonical `arxiv:2310.06825` or `null` on bad input. Validation regex: `^(\d{4}\.\d{4,5})|(\w+(\.\w+)*\/\d{7})$` covers both new-style (post-2007) and old-style (pre-2007 `cs.AI/0701001`) IDs. |
+| `frontend/src/components/chat/AttachPaperMenu.tsx` | NEW. Popover (`@radix-ui/react-popover` — already a dep) anchored on the paperclip button. Two segments: "Upload PDF" (file input + drag-and-drop dropzone) and "Paste arXiv ID" (text input + Submit). On success in either, calls `useChatStore`'s new `addReferenceFromIngest(papers_id, paper_content_id, title)` action so the Reference Sources panel reflects the addition without a roundtrip, and surfaces a toast (sonner — already wired in [`frontend/src/components/Toaster.tsx`](../../../frontend/src/components/Toaster.tsx)). On error, surfaces the backend error message (e.g., 413 "file too large", 415 "only application/pdf is accepted", 422 "no_ingestible_source" for arXiv-ID withdrawn-paper case). |
+| `frontend/src/components/chat/Composer.tsx` | Remove the `disabled` + `pointer-events-none` from the paperclip `Capability` entry. Wrap that one button in `<AttachPaperMenu trigger={...} />`. The other three placeholders stay disabled (Plan D/F/G surfaces). Tooltip text changes from "Coming in Plan C —" to "Attach paper — upload PDF or paste arXiv ID". |
+| `frontend/src/store/chat.ts` | Add `addReferenceFromIngest({ papers_id, paper_content_id, title, kind })` action. Idempotent: if a reference with the same `papers_id` already exists in the active session's references list, no-op (covers re-attach + cache-hit case). |
+| `frontend/tests/components/AttachPaperMenu.test.tsx` | NEW. RTL + MSW. Covers: (a) PDF upload happy path (mock `POST /papers/upload` → 201 with `IngestResponse`, assert toast text + store mutation); (b) PDF too large → 413 → error toast; (c) wrong MIME → 415 → error toast; (d) arXiv ID happy path (`2310.06825` → `arxiv:2310.06825` normalized → `POST /papers` mock returns 201); (e) bad arXiv ID → inline validation error, no network call; (f) arXiv URL form (`https://arxiv.org/abs/2310.06825v3`) normalises to canonical form; (g) cache-hit branch (mock returns `cache_hit=true`) → toast says "Re-attached" instead of "Added". |
+| `frontend/tests/lib/api.test.ts` | Extend with `parseArxivId` unit cases — at minimum: bare ID, `arxiv:` prefix, abs URL with version, pdf URL, old-style `cs.AI/0701001`, malformed `foo` → `null`, leading/trailing whitespace tolerated. |
+
+**Out of scope for v2.9** (deliberately deferred):
+
+- LaTeX-tarball (`.tar.gz` / `.zip`) upload. The pipeline `_ingest_upload(upload_kind="latex")` branch exists and works, but the UX shape (decide whether to upload one `.tex` file vs a whole project tarball, and how to surface multi-file error states) deserves a small brainstorm rather than being bolted on as part of this round. Track as a v3.x item.
+- Drag-and-drop directly onto the chat thread (vs the popover dropzone). Same UX-brainstorm reason — and the popover dropzone covers the demo's must-have surface.
+- arXiv-ID *autocomplete* (typing "Mamba" and getting arXiv suggestions). That's `paper_search` agent territory — manual entry is for the user who already has the ID in hand.
+
+### Tasks
+
+#### Task v2.9-1 — Backend: `POST /papers/upload` endpoint
+
+**Files:**
+- Modify: [`backend/src/paperhub/config.py`](../../../backend/src/paperhub/config.py) — add `max_upload_mb`.
+- Modify: [`backend/src/paperhub/api/papers.py`](../../../backend/src/paperhub/api/papers.py) — new route.
+- Modify: [`backend/.env.example`](../../../backend/.env.example) — document the env var.
+- Create: [`backend/tests/test_papers_upload.py`](../../../backend/tests/test_papers_upload.py).
+
+- [ ] **Step 1: Failing test — happy path PDF upload.**
+
+```python
+# backend/tests/test_papers_upload.py
+from pathlib import Path
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from paperhub.app import app
+
+
+@pytest.mark.asyncio
+async def test_upload_pdf_happy_path(seed_session, tmp_path: Path) -> None:
+    sample_pdf = Path(__file__).parent / "fixtures" / "papers" / "sample.pdf"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        with sample_pdf.open("rb") as f:
+            r = await ac.post(
+                "/papers/upload",
+                data={"session_id": str(seed_session)},
+                files={"file": ("sample.pdf", f, "application/pdf")},
+            )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["cache_hit"] is False
+    assert body["paper_content_id"] >= 1
+    assert body["papers_id"] >= 1
+    assert body["title"] == "sample"  # upload_path.stem fallback per pipeline
+```
+
+Run: `cd backend; uv run pytest tests/test_papers_upload.py::test_upload_pdf_happy_path -v`
+Expected: FAIL with `404 Not Found` (endpoint not registered yet).
+
+- [ ] **Step 2: Add `max_upload_mb` to `Settings`.**
+
+In [`backend/src/paperhub/config.py`](../../../backend/src/paperhub/config.py), extend `Settings`:
+
+```python
+@dataclass(frozen=True)
+class Settings:
+    # ... existing fields ...
+    max_upload_mb: int    # NEW (v2.9)
+```
+
+In `load_settings()`:
+
+```python
+max_upload_mb=int(os.environ.get("PAPERHUB_MAX_UPLOAD_MB", "30")),
+```
+
+- [ ] **Step 3: Implement the upload endpoint.**
+
+Append to [`backend/src/paperhub/api/papers.py`](../../../backend/src/paperhub/api/papers.py):
+
+```python
+import tempfile
+from fastapi import File, Form, UploadFile
+
+_PDF_MIME = "application/pdf"
+
+
+@router.post("/upload", response_model=IngestResponse, status_code=201)
+async def upload_paper(
+    request: Request,
+    session_id: int = Form(..., ge=1),
+    file: UploadFile = File(...),
+) -> IngestResponse:
+    """Accept a multipart PDF upload, sha256-key it, run the pipeline.
+
+    Bypasses `add_paper_to_session_dispatch` because that function is
+    paper_id-string-keyed (`arxiv:` / `ss:` / `library:` prefixes); file
+    bytes don't belong in the LLM-visible tool surface. Calls
+    `PaperPipeline.ingest()` directly with an upload_path IngestRequest.
+    """
+    settings = load_settings()
+    max_bytes = settings.max_upload_mb * 1024 * 1024
+
+    if file.content_type != _PDF_MIME:
+        raise HTTPException(
+            415, f"unsupported content_type={file.content_type!r}; expected {_PDF_MIME}"
+        )
+
+    # Stream to a tempfile (don't materialise the whole PDF in memory).
+    # Suffix .pdf so the pipeline's extension-based branches behave.
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    bytes_written = 0
+    try:
+        try:
+            while chunk := await file.read(1 << 20):  # 1 MiB blocks
+                bytes_written += len(chunk)
+                if bytes_written > max_bytes:
+                    raise HTTPException(
+                        413,
+                        f"file exceeds {settings.max_upload_mb} MiB ceiling",
+                    )
+                tmp.write(chunk)
+        finally:
+            tmp.close()
+
+        upload_path = Path(tmp.name)
+
+        async with open_db(settings.db_path) as conn:
+            pipeline = PaperPipeline(
+                conn,
+                papers_cache_dir=settings.papers_cache_dir,
+                chroma=get_chroma(request, settings),
+            )
+            result = await pipeline.ingest(
+                IngestRequest(
+                    session_id=session_id,
+                    upload_path=upload_path,
+                    upload_kind="pdf",
+                ),
+            )
+    finally:
+        try:
+            Path(tmp.name).unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("failed to remove upload tempfile %s: %s", tmp.name, exc)
+
+    return IngestResponse(
+        paper_content_id=result.paper_content_id,
+        papers_id=result.papers_id,
+        cache_hit=result.cache_hit,
+        title=result.title,
+    )
+```
+
+Top-of-file imports needed: `IngestRequest` from `paperhub.pipelines.paper_pipeline` (already imported `ArxivMetadata, PaperPipeline` — extend the line).
+
+- [ ] **Step 4: Run the happy-path test — it should pass.**
+
+Run: `cd backend; uv run pytest tests/test_papers_upload.py::test_upload_pdf_happy_path -v`
+Expected: PASS.
+
+- [ ] **Step 5: Add edge-case tests — 415 wrong MIME, 413 too large, cache hit on re-upload.**
+
+```python
+@pytest.mark.asyncio
+async def test_upload_rejects_non_pdf(seed_session) -> None:
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.post(
+            "/papers/upload",
+            data={"session_id": str(seed_session)},
+            files={"file": ("a.txt", b"hello", "text/plain")},
+        )
+    assert r.status_code == 415
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_oversize(seed_session, monkeypatch) -> None:
+    monkeypatch.setenv("PAPERHUB_MAX_UPLOAD_MB", "1")
+    transport = ASGITransport(app=app)
+    big = b"%PDF-1.4\n" + b"\x00" * (2 * 1024 * 1024)  # 2 MiB > 1 MiB cap
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        r = await ac.post(
+            "/papers/upload",
+            data={"session_id": str(seed_session)},
+            files={"file": ("big.pdf", big, "application/pdf")},
+        )
+    assert r.status_code == 413
+
+
+@pytest.mark.asyncio
+async def test_upload_same_bytes_returns_cache_hit(seed_session) -> None:
+    sample_pdf = Path(__file__).parent / "fixtures" / "papers" / "sample.pdf"
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        with sample_pdf.open("rb") as f:
+            first = await ac.post(
+                "/papers/upload",
+                data={"session_id": str(seed_session)},
+                files={"file": ("sample.pdf", f, "application/pdf")},
+            )
+        with sample_pdf.open("rb") as f:
+            second = await ac.post(
+                "/papers/upload",
+                data={"session_id": str(seed_session)},
+                files={"file": ("sample.pdf", f, "application/pdf")},
+            )
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert second.json()["cache_hit"] is True
+    assert second.json()["paper_content_id"] == first.json()["paper_content_id"]
+```
+
+Run: `cd backend; uv run pytest tests/test_papers_upload.py -v`
+Expected: 4 PASS.
+
+- [ ] **Step 6: Quality gates + commit.**
+
+```powershell
+cd backend
+uv run pytest -q
+uv run ruff check src tests
+uv run mypy src
+```
+
+Expected: clean.
+
+```powershell
+git add backend/src/paperhub/api/papers.py backend/src/paperhub/config.py backend/.env.example backend/tests/test_papers_upload.py
+git commit -m "feat(papers): add POST /papers/upload multipart endpoint for PDF ingest"
+```
+
+#### Task v2.9-2 — Frontend: `parseArxivId` helper + `uploadPdf` API client
+
+**Files:**
+- Modify: [`frontend/src/lib/api.ts`](../../../frontend/src/lib/api.ts) — add `uploadPdf` and `parseArxivId`.
+- Modify: [`frontend/tests/lib/api.test.ts`](../../../frontend/tests/lib/api.test.ts) — extend with parser cases.
+
+- [ ] **Step 1: Failing test — parseArxivId cases.**
+
+Add to [`frontend/tests/lib/api.test.ts`](../../../frontend/tests/lib/api.test.ts):
+
+```typescript
+import { describe, it, expect } from "vitest";
+import { parseArxivId } from "@/lib/api";
+
+describe("parseArxivId", () => {
+  it("accepts a bare new-style ID", () => {
+    expect(parseArxivId("2310.06825")).toBe("arxiv:2310.06825");
+  });
+  it("accepts an arxiv: prefix", () => {
+    expect(parseArxivId("arxiv:2310.06825")).toBe("arxiv:2310.06825");
+  });
+  it("strips a version suffix", () => {
+    expect(parseArxivId("2310.06825v3")).toBe("arxiv:2310.06825");
+  });
+  it("normalises an abs URL", () => {
+    expect(parseArxivId("https://arxiv.org/abs/2310.06825v1")).toBe(
+      "arxiv:2310.06825",
+    );
+  });
+  it("normalises a pdf URL", () => {
+    expect(parseArxivId("https://arxiv.org/pdf/2310.06825.pdf")).toBe(
+      "arxiv:2310.06825",
+    );
+  });
+  it("accepts old-style IDs", () => {
+    expect(parseArxivId("cs.AI/0701001")).toBe("arxiv:cs.AI/0701001");
+  });
+  it("trims whitespace", () => {
+    expect(parseArxivId("  2310.06825  ")).toBe("arxiv:2310.06825");
+  });
+  it("rejects garbage", () => {
+    expect(parseArxivId("not-an-id")).toBeNull();
+    expect(parseArxivId("")).toBeNull();
+    expect(parseArxivId("12.345")).toBeNull();
+  });
+});
+```
+
+Run: `cd frontend; npm test -- parseArxivId`
+Expected: FAIL — `parseArxivId is not a function`.
+
+- [ ] **Step 2: Implement `parseArxivId` and `uploadPdf`.**
+
+Append to [`frontend/src/lib/api.ts`](../../../frontend/src/lib/api.ts):
+
+```typescript
+const ARXIV_NEW = /^(\d{4}\.\d{4,5})(v\d+)?$/;
+const ARXIV_OLD = /^([a-z\-]+(\.[A-Z]{2})?\/\d{7})(v\d+)?$/;
+
+/** Normalise user-supplied arXiv input to canonical `arxiv:<id>` form, or
+ * null if it doesn't look like an arXiv identifier. Accepts bare IDs,
+ * `arxiv:` prefix, and `arxiv.org/abs/` or `arxiv.org/pdf/` URLs, with or
+ * without a trailing `vN` version suffix. */
+export function parseArxivId(input: string): string | null {
+  let s = input.trim();
+  if (!s) return null;
+  // Strip URL forms first.
+  const urlMatch = s.match(/arxiv\.org\/(?:abs|pdf)\/([^?#]+?)(?:\.pdf)?$/i);
+  if (urlMatch) s = urlMatch[1];
+  // Strip arxiv: prefix.
+  s = s.replace(/^arxiv:/i, "");
+  // Match new-style or old-style, capturing without version.
+  const mNew = s.match(ARXIV_NEW);
+  if (mNew) return `arxiv:${mNew[1]}`;
+  const mOld = s.match(ARXIV_OLD);
+  if (mOld) return `arxiv:${mOld[1]}`;
+  return null;
+}
+
+/** Multipart PDF upload. Backend hashes the bytes → sha256-keyed cache,
+ * so re-uploading the same file produces `cache_hit: true`. */
+export async function uploadPdf(
+  sessionId: number,
+  file: File,
+): Promise<IngestResult> {
+  const form = new FormData();
+  form.append("session_id", String(sessionId));
+  form.append("file", file);
+  const res = await fetch(`${API_BASE_URL}/papers/upload`, {
+    method: "POST",
+    body: form,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`API ${res.status}: ${text}`);
+  }
+  return (await res.json()) as IngestResult;
+}
+```
+
+- [ ] **Step 3: Run tests + lint + typecheck.**
+
+```powershell
+cd frontend
+npm test
+npm run typecheck
+npm run lint
+```
+
+Expected: all pass; parseArxivId tests now green.
+
+- [ ] **Step 4: Commit.**
+
+```powershell
+git add frontend/src/lib/api.ts frontend/tests/lib/api.test.ts
+git commit -m "feat(api): add uploadPdf client + parseArxivId normaliser"
+```
+
+#### Task v2.9-3 — Frontend: AttachPaperMenu popover + wire into Composer
+
+**Files:**
+- Create: [`frontend/src/components/chat/AttachPaperMenu.tsx`](../../../frontend/src/components/chat/AttachPaperMenu.tsx).
+- Modify: [`frontend/src/components/chat/Composer.tsx`](../../../frontend/src/components/chat/Composer.tsx) — replace the disabled paperclip with the menu trigger.
+- Modify: [`frontend/src/store/chat.ts`](../../../frontend/src/store/chat.ts) — add `addReferenceFromIngest` action.
+- Create: [`frontend/tests/components/AttachPaperMenu.test.tsx`](../../../frontend/tests/components/AttachPaperMenu.test.tsx).
+
+- [ ] **Step 1: Failing test — PDF upload happy path through the menu.**
+
+```tsx
+// frontend/tests/components/AttachPaperMenu.test.tsx
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { http, HttpResponse } from "msw";
+import { setupServer } from "msw/node";
+
+import { AttachPaperMenu } from "@/components/chat/AttachPaperMenu";
+import { useChatStore } from "@/store/chat";
+
+const server = setupServer(
+  http.post("http://localhost:8000/papers/upload", async () =>
+    HttpResponse.json(
+      {
+        paper_content_id: 11,
+        papers_id: 22,
+        cache_hit: false,
+        title: "Attention Is All You Need",
+      },
+      { status: 201 },
+    ),
+  ),
+);
+
+beforeAll(() => server.listen());
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+
+beforeEach(() => {
+  // seed an active session in the store
+  useChatStore.setState((s) => ({
+    ...s,
+    sessions: [
+      { id: 1, title: "t", messages: [], backend_session_id: 7 },
+    ],
+    activeSessionId: 1,
+  }));
+});
+
+describe("AttachPaperMenu", () => {
+  it("uploads a PDF and adds the reference to the store", async () => {
+    render(<AttachPaperMenu trigger={<button>Attach</button>} />);
+    await userEvent.click(screen.getByText("Attach"));
+    await userEvent.click(screen.getByRole("tab", { name: /upload pdf/i }));
+
+    const file = new File(["%PDF-1.4 fake"], "paper.pdf", {
+      type: "application/pdf",
+    });
+    const input = screen.getByLabelText(/select pdf/i) as HTMLInputElement;
+    await userEvent.upload(input, file);
+
+    await waitFor(() => {
+      expect(screen.getByText(/added/i)).toBeInTheDocument();
+    });
+    // store mutation
+    const refs = useChatStore.getState().sessions[0].references ?? [];
+    expect(refs.some((r) => r.papers_id === 22)).toBe(true);
+  });
+});
+```
+
+Run: `cd frontend; npm test -- AttachPaperMenu`
+Expected: FAIL — `AttachPaperMenu is not exported`.
+
+- [ ] **Step 2: Implement the menu component.**
+
+Create [`frontend/src/components/chat/AttachPaperMenu.tsx`](../../../frontend/src/components/chat/AttachPaperMenu.tsx):
+
+```tsx
+import { useRef, useState } from "react";
+import { toast } from "sonner";
+
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ingestPaper, parseArxivId, uploadPdf } from "@/lib/api";
+import { useChatStore } from "@/store/chat";
+
+interface Props {
+  trigger: React.ReactNode;
+}
+
+export function AttachPaperMenu({ trigger }: Props) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [arxivInput, setArxivInput] = useState("");
+  const [arxivError, setArxivError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const sessionId = useChatStore((s) => {
+    const active = s.sessions.find((sess) => sess.id === s.activeSessionId);
+    return active?.backend_session_id ?? null;
+  });
+  const addRef = useChatStore((s) => s.addReferenceFromIngest);
+
+  const handleResult = (
+    r: { papers_id: number; paper_content_id: number; title: string; cache_hit: boolean },
+  ) => {
+    addRef({
+      papers_id: r.papers_id,
+      paper_content_id: r.paper_content_id,
+      title: r.title,
+      kind: "pdf_upload",
+    });
+    toast.success(r.cache_hit ? "Re-attached" : "Added", {
+      description: r.title,
+    });
+    setOpen(false);
+  };
+
+  const onPdfPicked = async (file: File | undefined) => {
+    if (!file || sessionId == null) return;
+    setBusy(true);
+    try {
+      const r = await uploadPdf(sessionId, file);
+      handleResult(r);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error("Upload failed", { description: msg });
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const onArxivSubmit = async () => {
+    setArxivError(null);
+    const paperId = parseArxivId(arxivInput);
+    if (!paperId) {
+      setArxivError("Not a valid arXiv identifier or URL.");
+      return;
+    }
+    if (sessionId == null) return;
+    setBusy(true);
+    try {
+      const r = await ingestPaper(sessionId, paperId);
+      handleResult({ ...r, papers_id: r.papers_id });
+      setArxivInput("");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error("Import failed", { description: msg });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>{trigger}</PopoverTrigger>
+      <PopoverContent className="w-80" align="start">
+        <Tabs defaultValue="pdf">
+          <TabsList className="w-full">
+            <TabsTrigger value="pdf" className="flex-1">Upload PDF</TabsTrigger>
+            <TabsTrigger value="arxiv" className="flex-1">Paste arXiv ID</TabsTrigger>
+          </TabsList>
+          <TabsContent value="pdf" className="space-y-2 pt-3">
+            <label className="text-sm text-muted-foreground" htmlFor="pdf-file">
+              Select PDF (max 30 MiB)
+            </label>
+            <Input
+              id="pdf-file"
+              ref={fileRef}
+              type="file"
+              accept="application/pdf"
+              disabled={busy || sessionId == null}
+              onChange={(e) => onPdfPicked(e.target.files?.[0])}
+              aria-label="Select PDF"
+            />
+          </TabsContent>
+          <TabsContent value="arxiv" className="space-y-2 pt-3">
+            <Input
+              placeholder="2310.06825 or arxiv URL"
+              value={arxivInput}
+              onChange={(e) => setArxivInput(e.target.value)}
+              disabled={busy}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void onArxivSubmit();
+                }
+              }}
+            />
+            {arxivError && (
+              <p className="text-xs text-destructive">{arxivError}</p>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => void onArxivSubmit()}
+              disabled={busy || arxivInput.trim().length === 0 || sessionId == null}
+            >
+              Import
+            </Button>
+          </TabsContent>
+        </Tabs>
+      </PopoverContent>
+    </Popover>
+  );
+}
+```
+
+- [ ] **Step 3: Add the store action.**
+
+In [`frontend/src/store/chat.ts`](../../../frontend/src/store/chat.ts), extend the store type with:
+
+```typescript
+interface AddReferenceArgs {
+  papers_id: number;
+  paper_content_id: number;
+  title: string;
+  kind: string;
+}
+
+addReferenceFromIngest: (args: AddReferenceArgs) => void;
+```
+
+Implementation (inside `create<…>(…)`):
+
+```typescript
+addReferenceFromIngest: ({ papers_id, paper_content_id, title, kind }) =>
+  set((state) => ({
+    sessions: state.sessions.map((s) =>
+      s.id === state.activeSessionId
+        ? {
+            ...s,
+            references: (s.references ?? []).some(
+              (r) => r.papers_id === papers_id,
+            )
+              ? s.references
+              : [
+                  ...(s.references ?? []),
+                  {
+                    papers_id,
+                    paper_content_id,
+                    enabled: true,
+                    added_at: new Date().toISOString(),
+                    arxiv_id: null,
+                    title,
+                    year: null,
+                    kind,
+                  },
+                ],
+          }
+        : s,
+    ),
+  })),
+```
+
+If `ChatSession.references` is not yet on the type, add it: `references?: ReferenceItem[]` in [`frontend/src/types/domain.ts`](../../../frontend/src/types/domain.ts).
+
+- [ ] **Step 4: Wire the menu into Composer.**
+
+In [`frontend/src/components/chat/Composer.tsx`](../../../frontend/src/components/chat/Composer.tsx), drop the paperclip from the `CAPABILITIES` array and render it separately:
+
+```tsx
+import { AttachPaperMenu } from "@/components/chat/AttachPaperMenu";
+
+// inside the tool-row JSX, before the .map of remaining placeholders:
+<AttachPaperMenu
+  trigger={
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className="h-8 w-8 text-muted-foreground"
+      aria-label="Attach paper"
+    >
+      <Paperclip className="h-4 w-4" />
+    </Button>
+  }
+/>
+```
+
+Remove the `Paperclip` entry from `CAPABILITIES` (it now lives in its own JSX block; the other three placeholders stay).
+
+- [ ] **Step 5: Add edge-case tests.**
+
+Extend the test file with:
+
+- 413 (file too large): MSW handler returns 413 → expect `toast.error` rendered.
+- 415 (wrong MIME): the input has `accept="application/pdf"` but a programmatic File with `type="text/plain"` should still get rejected by the backend; assert the error toast.
+- arXiv happy path: type `2310.06825v3`, click Import, assert MSW `/papers` was called with body `{session_id: 7, paper_id: "arxiv:2310.06825"}`, assert store mutation.
+- Bad arXiv input: type `foo`, click Import → inline `Not a valid arXiv identifier` shown, no network call (assert `vi.fn` MSW handler was never hit).
+- Cache hit: MSW returns `cache_hit: true` → toast text is "Re-attached" not "Added".
+
+Each test follows the same `render → click trigger → interact → wait for toast → assert` shape as Step 1.
+
+- [ ] **Step 6: Run all frontend gates.**
+
+```powershell
+cd frontend
+npm test
+npm run typecheck
+npm run lint
+npm run build
+```
+
+Expected: clean across all four.
+
+- [ ] **Step 7: Manual browser verification.**
+
+From repo root, with `backend/.env` provider key set:
+
+```powershell
+.\scripts\smoke_e2e.ps1
+```
+
+Then in the browser:
+
+1. Click the paperclip → popover opens with two tabs.
+2. **Upload PDF tab:** pick a real arXiv PDF off disk. Wait for "Added" toast. Reference Sources panel (already shipped in Plan D-prep) shows the new row with `kind=pdf_upload`. Refresh the page — the reference persists (DB-backed).
+3. **Paste arXiv ID tab:** type `2310.06825`, click Import. Pipeline downloads, extracts LaTeX, embeds. Toast says "Added". Reference Sources panel shows the row with `kind=arxiv`.
+4. **Cache-hit:** re-upload the same PDF → toast says "Re-attached", `paper_content_id` matches the first upload (verifiable in the trace panel or `papers.db` SELECT).
+5. **Bad arXiv ID:** type `not-an-id`, click Import → inline "Not a valid arXiv identifier" shown; nothing hits the network (verifiable in DevTools Network panel).
+
+- [ ] **Step 8: Commit.**
+
+```powershell
+git add frontend/src/components/chat/AttachPaperMenu.tsx \
+        frontend/src/components/chat/Composer.tsx \
+        frontend/src/store/chat.ts \
+        frontend/src/types/domain.ts \
+        frontend/tests/components/AttachPaperMenu.test.tsx
+git commit -m "feat(chat): wire AttachPaperMenu for PDF upload + arXiv-ID import"
+```
+
+#### Task v2.9-4 — CLAUDE.md + SRS pointers
+
+**Files:**
+- Modify: [`CLAUDE.md`](../../../CLAUDE.md) — strike v2.9 follow-up off the Plan C known-follow-ups list; add the new `/papers/upload` line to the backend surface section.
+- Modify: [`docs/superpowers/specs/2026-05-17-paperhub-srs.md`](../../../docs/superpowers/specs/2026-05-17-paperhub-srs.md) — bump to v2.9 with one Revision History entry referencing this round.
+
+- [ ] **Step 1: Update SRS Revision History.**
+
+Append a v2.9 row noting "Composer ‘Attach paper’ wired to `POST /papers/upload` (PDF) and `POST /papers {paper_id: arxiv:…}` (manual arXiv-ID); transport-only round, no schema or agent change." Bump the version banner at the top from v2.8 → v2.9.
+
+- [ ] **Step 2: Update project CLAUDE.md.**
+
+In the "Plan C known follow-ups" section, mark the PDF upload / arxiv-import item closed and reference the v2.9 round. Add `POST /papers/upload` to the surface list near `POST /papers` if surfaces are enumerated.
+
+- [ ] **Step 3: Commit.**
+
+```powershell
+git add CLAUDE.md docs/superpowers/specs/2026-05-17-paperhub-srs.md
+git commit -m "docs(srs,plan-c,claude): v2.9 — Composer attach-paper PDF upload + arXiv-ID import"
+```
+
+### Quality gates after the v2.9 round
+
+From `backend/`:
+
+```powershell
+uv run pytest -q                # 287+4 new = 291 passed
+uv run ruff check src tests
+uv run mypy src
+.\scripts\smoke_mcp_papers.ps1
+.\scripts\smoke_chat_real.ps1   # regression — arxiv-id path still works through the chat surface
+```
+
+From `frontend/`:
+
+```powershell
+npm test                        # 25+7 new = 32 passed
+npm run typecheck
+npm run lint
+npm run build
+```
+
+From repo root:
+
+```powershell
+.\scripts\smoke_e2e.ps1
+```
+
+Browser checks: see Task v2.9-3 Step 7.
+
+### Acceptance for v2.9
+
+- PDF upload through Composer → `paper_content` row with `kind='pdf_upload'`, chunks present, Chroma vectors present, Reference Sources panel reflects the addition immediately, `paper_qa` on a subsequent turn can cite chunks from the uploaded paper.
+- Re-uploading the same bytes → toast "Re-attached", no second `paper_content` row, sub-second response.
+- arXiv ID manual entry through Composer → same end-state as the agent-driven arxiv ingest path; cache shared.
+- Bad input rejected at the right layer: junk in the arXiv tab → inline form error, no network; wrong MIME / oversize → backend 415/413, surfaced as an error toast.
+
+### Files touched (summary)
+
+- New: [`backend/tests/test_papers_upload.py`](../../../backend/tests/test_papers_upload.py).
+- New: [`frontend/src/components/chat/AttachPaperMenu.tsx`](../../../frontend/src/components/chat/AttachPaperMenu.tsx).
+- New: [`frontend/tests/components/AttachPaperMenu.test.tsx`](../../../frontend/tests/components/AttachPaperMenu.test.tsx).
+- Modify: [`backend/src/paperhub/api/papers.py`](../../../backend/src/paperhub/api/papers.py) — `POST /papers/upload` route.
+- Modify: [`backend/src/paperhub/config.py`](../../../backend/src/paperhub/config.py) — `max_upload_mb`.
+- Modify: [`backend/.env.example`](../../../backend/.env.example) — `PAPERHUB_MAX_UPLOAD_MB`.
+- Modify: [`frontend/src/lib/api.ts`](../../../frontend/src/lib/api.ts) — `uploadPdf`, `parseArxivId`.
+- Modify: [`frontend/src/components/chat/Composer.tsx`](../../../frontend/src/components/chat/Composer.tsx) — replace disabled paperclip with `AttachPaperMenu` trigger.
+- Modify: [`frontend/src/store/chat.ts`](../../../frontend/src/store/chat.ts) — `addReferenceFromIngest` action.
+- Modify: [`frontend/src/types/domain.ts`](../../../frontend/src/types/domain.ts) — optional `references` field on `ChatSession` (if not already present).
+- Modify: [`frontend/tests/lib/api.test.ts`](../../../frontend/tests/lib/api.test.ts) — `parseArxivId` cases.
+- Modify: [`CLAUDE.md`](../../../CLAUDE.md), [`docs/superpowers/specs/2026-05-17-paperhub-srs.md`](../../../docs/superpowers/specs/2026-05-17-paperhub-srs.md) — version bump + follow-up closure.
+
+---
