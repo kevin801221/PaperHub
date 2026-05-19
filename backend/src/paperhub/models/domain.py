@@ -14,6 +14,8 @@ class SectionEntry(BaseModel):
     physical extents within source.flattened.tex. Used by the per-paper
     paper_qa subagent's list_sections() tool (Plan C v2.10-3)."""
 
+    model_config = ConfigDict(extra="forbid")
+
     name: str
     char_start: int
     char_end: int

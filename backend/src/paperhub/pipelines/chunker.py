@@ -35,7 +35,7 @@ class Chunk:
     text: str
 
 
-def _strip_latex_comments(text: str) -> str:
+def strip_latex_comments(text: str) -> str:
     """Remove LaTeX % line-comments while preserving \\% (literal percent).
 
     A ``%`` preceded by an **odd** number of backslashes is an escaped literal
@@ -46,6 +46,10 @@ def _strip_latex_comments(text: str) -> str:
     This single-pass regex approach handles the ``\\\\%`` case (LaTeX
     line-break ``\\\\`` followed by a comment ``%``) which a one-pass
     negative-lookbehind cannot — ``re`` has no variable-length lookbehind.
+
+    Public so callers that receive the original (un-stripped) text can apply
+    the same normalisation before slicing by chunk char offsets (which are
+    always relative to the post-strip text produced here).
     """
 
     def _replace(m: re.Match[str]) -> str:
@@ -65,7 +69,7 @@ def chunk_text(text: str, *, target: int = 800, hard: int = 1000) -> list[Chunk]
     # Strip LaTeX line-comments BEFORE section detection. Chunk char_start /
     # char_end indices are relative to the stripped text. The pre-rendered
     # HTML used by the Citation Canvas never contained the comments anyway.
-    text = _strip_latex_comments(text)
+    text = strip_latex_comments(text)
 
     # Split into section-spans.
     spans: list[tuple[str | None, int, int]] = []

@@ -485,3 +485,51 @@ async def test_paper_pipeline_persists_sections_json_at_ingest(
         assert s["char_end"] > s["char_start"]
         for required_key in ("name", "char_start", "char_end", "token_count", "chunk_count"):
             assert required_key in s
+
+
+# ---------------------------------------------------------------------------
+# v2.10-2 review: _build_sections_json correctness — comment stripping
+# ---------------------------------------------------------------------------
+
+
+def test_build_sections_json_token_count_excludes_latex_comments() -> None:
+    """Section token_count must reflect the post-comment-strip text so the
+    subagent's section TOC doesn't overcount tokens. Regression: chunker
+    strips locally, _build_sections_json was slicing the un-stripped
+    caller copy.
+
+    Strategy: build sections_json from a comment-heavy LaTeX string, then
+    independently tokenize only the stripped content.  The reported
+    token_count must match the stripped-content token count (within ±2
+    tokenizer-boundary noise), not the un-stripped character count.
+    """
+    import json
+
+    import tiktoken
+
+    from paperhub.pipelines.chunker import chunk_text, strip_latex_comments
+
+    # A single section with heavy inline comments — each line ends with
+    # a LaTeX % comment that adds ~8 tokens if not stripped.
+    source = "\\section{Method}\n" + (
+        "Real content here. % this is a comment that must NOT count\n" * 80
+    )
+
+    chunks = chunk_text(source)
+    sections_json = PaperPipeline._build_sections_json(chunks, source)
+    reported_tokens = json.loads(sections_json)[0]["token_count"]
+
+    # Ground-truth: tokenize only the stripped text between the chunk extents.
+    stripped = strip_latex_comments(source)
+    enc = tiktoken.get_encoding("cl100k_base")
+    # Gather the same char extents _build_sections_json would use.
+    method_chunks = [c for c in chunks if c.section == "Method"]
+    assert method_chunks, "chunker should have produced at least one Method chunk"
+    expected_text = stripped[method_chunks[0].char_start : method_chunks[-1].char_end]
+    expected_tokens = len(enc.encode(expected_text))
+
+    assert abs(reported_tokens - expected_tokens) <= 2, (
+        f"reported token_count ({reported_tokens}) differs from stripped-content "
+        f"token count ({expected_tokens}) by {abs(reported_tokens - expected_tokens)}; "
+        "_build_sections_json is slicing the un-stripped (commented) text"
+    )

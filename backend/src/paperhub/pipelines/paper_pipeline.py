@@ -34,7 +34,7 @@ from paperhub.pipelines.arxiv_client import (
     download_arxiv_source,
     search_arxiv,
 )
-from paperhub.pipelines.chunker import Chunk, chunk_text
+from paperhub.pipelines.chunker import Chunk, chunk_text, strip_latex_comments
 from paperhub.pipelines.embedder import Embedder, get_embedder
 from paperhub.pipelines.extract import (
     _extract_pdf_metadata,
@@ -48,6 +48,9 @@ from paperhub.rag.chroma import ChromaStore
 
 _PDF_DOWNLOAD_TIMEOUT = httpx.Timeout(60.0, connect=10.0)
 _PDF_USER_AGENT = "PaperHub/0.1 (https://github.com/whats2000/PaperHub)"
+# Shared tiktoken encoder — hoisted to module level so repeated calls to
+# _build_sections_json don't pay the (cached but misleading) per-call cost.
+_CL100K = tiktoken.get_encoding("cl100k_base")
 
 
 @dataclass(frozen=True)
@@ -568,7 +571,12 @@ class PaperPipeline:
         appearance. Chunks with section=None (preamble / pre-first-section
         text) are excluded — they are not addressable by name.
         """
-        enc = tiktoken.get_encoding("cl100k_base")
+        # Chunk char offsets are relative to the COMMENT-STRIPPED text, since
+        # chunk_text strips before computing offsets. Apply the same strip
+        # here so section_text slicing aligns with chunks[*].char_start /
+        # char_end and the resulting token_count reflects content the model
+        # will actually see.
+        stripped_text = strip_latex_comments(full_text)
         per_section: dict[str, list[Chunk]] = defaultdict(list)
         section_order: list[str] = []
         for c in chunks:
@@ -581,13 +589,13 @@ class PaperPipeline:
         entries: list[SectionEntry] = []
         for name in section_order:
             group = per_section[name]
-            section_text = full_text[group[0].char_start : group[-1].char_end]
+            section_text = stripped_text[group[0].char_start : group[-1].char_end]
             entries.append(
                 SectionEntry(
                     name=name,
                     char_start=group[0].char_start,
                     char_end=group[-1].char_end,
-                    token_count=len(enc.encode(section_text)),
+                    token_count=len(_CL100K.encode(section_text)),
                     chunk_count=len(group),
                 )
             )
