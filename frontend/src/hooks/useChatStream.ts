@@ -5,6 +5,7 @@ import type {
   ToolCallRecord,
 } from "@/types/domain";
 import { streamChat } from "@/lib/sse";
+import { listSessionReferences } from "@/lib/api";
 import { useChatStore } from "@/store/chat";
 
 interface SessionData { run_id: number; session_id: number; }
@@ -86,6 +87,26 @@ export function useChatStream() {
               store
                 .getState()
                 .setSearchResults(sessionId, s.run_id, s.candidates);
+              // If the agent auto-added any candidates, refresh the
+              // Reference Sources panel — the chat-stream wrote rows
+              // server-side, but the panel only pulls on
+              // backend_session_id changes, so it would otherwise
+              // stay empty until reload. Use the latest backend
+              // session id from the store, since the session event
+              // may have arrived earlier this stream and updated it.
+              if (s.candidates.some((c) => c.auto_added)) {
+                const latest = store
+                  .getState()
+                  .sessions.find((sess) => sess.id === sessionId)
+                  ?.backend_session_id;
+                if (latest != null) {
+                  void listSessionReferences(latest)
+                    .then((refs) =>
+                      store.getState().setReferences(latest, refs),
+                    )
+                    .catch(() => undefined);
+                }
+              }
             } else if (event === "final") {
               const f = data as FinalData;
               store.getState().finaliseMessage(sessionId, f.run_id, f.content);

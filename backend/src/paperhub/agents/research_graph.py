@@ -292,7 +292,15 @@ def build_paper_search_subgraph(deps: ResearchDeps) -> Any:
                             r.identity.rationale
                             or "Discovered via web.search + Semantic Scholar."
                         ),
-                        finalize=False,
+                        # v2.7 ResolvedPapers only exist when the user
+                        # named the paper explicitly AND the Resolver
+                        # landed evidence — the Parser already filtered
+                        # vague/topic-survey queries to []. So every
+                        # candidate here is "user asked, we found":
+                        # auto-add to session knowledge base. Cap-and-
+                        # already-in-session checks happen in
+                        # api.chat._process_search_results.
+                        finalize=True,
                     ),
                 )
             writer({"event": "search_results", "candidates": candidates})
