@@ -201,13 +201,86 @@ async def test_search_library_dispatches_with_context(
     assert hits[0]["title"] == "Attention Is All You Need"
 
 
+async def test_loopback_handler_skips_tracer_when_caller_supplied_run(
+    migrated_db: aiosqlite.Connection,
+    session_and_run: tuple[int, int],
+) -> None:
+    """Regression: when ``caller_supplied_run=True`` (agent loopback path),
+    the handler MUST NOT write its own tracer-step row — the agent's outer
+    ``tracer.step`` is already recording this tool call on the same run, so
+    a second insert would violate ``tool_calls`` PK
+    ``(run_id, branch, step_index)`` and surface as an MCP tool error.
+
+    Without this guard, every agent-driven ``papers.*`` call dies with
+    ``UNIQUE constraint failed`` and the LLM falls back to hallucinating
+    answers from training data — observed during the v2.6 manual smoke
+    against the live backend.
+    """
+    session_id, run_id = session_and_run
+    await _seed_paper_content(
+        migrated_db,
+        arxiv_id="2401.00099",
+        title="Loopback Test",
+        abstract="body",
+    )
+
+    # Simulate the agent's outer tracer step landing first (step_index=0)
+    # with the same canonical tool name the handler would also emit.
+    outer_tracer = Tracer(migrated_db, run_id=run_id, branch="")
+    async with outer_tracer.step(
+        agent="research",
+        tool="paper_search:papers.search_library",
+        model=None,
+    ) as outer_step:
+        outer_step.record_args({"query": "loopback", "max_results": 3})
+
+        # The handler runs inside the agent's tracer step (in production
+        # the agent has finished `await registry.call(...)` but the tracer
+        # step is still open). Set up the context with caller_supplied_run.
+        inner_tracer = Tracer(migrated_db, run_id=run_id, branch="")
+        ctx = PaperhubPapersRequestContext(
+            conn=migrated_db,
+            session_id=session_id,
+            run_id=run_id,
+            tracer=inner_tracer,
+            caller_supplied_run=True,
+        )
+        server = build_paperhub_papers_server()
+        from paperhub.mcp.server_context import reset_request_context
+        token = set_request_context(ctx)
+        try:
+            await server.call_tool(
+                "search_library", {"query": "loopback", "max_results": 3},
+            )
+        finally:
+            reset_request_context(token)
+        outer_step.record_result({"count": 1})
+
+    # Exactly ONE tool_calls row should exist for this run — the outer
+    # one. The handler's would-be inner row was suppressed.
+    async with migrated_db.execute(
+        "SELECT step_index, tool, status FROM tool_calls WHERE run_id = ? "
+        "ORDER BY step_index",
+        (run_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    assert len(rows) == 1, f"expected 1 row, got {len(rows)}: {rows!r}"
+    assert rows[0][1] == "paper_search:papers.search_library"
+    assert rows[0][2] == "ok"
+
+
 async def test_search_library_writes_tracer_step(
     migrated_db: aiosqlite.Connection,
     request_context: PaperhubPapersRequestContext,
     session_and_run: tuple[int, int],
 ) -> None:
     """Every MCP tool call writes a ``tool_calls`` row with the
-    ``paper_search:papers.<tool>`` naming convention."""
+    ``paper_search:papers.<tool>`` naming convention.
+
+    This is the **external-client path** (``caller_supplied_run=False``,
+    the middleware's default for Claude Desktop / Cursor). Tracer step is
+    the only source of observability for those callers.
+    """
     _session_id, run_id = session_and_run
     await _seed_paper_content(
         migrated_db,

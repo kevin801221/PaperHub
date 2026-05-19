@@ -1,4 +1,6 @@
+import logging
 import os
+import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -19,6 +21,8 @@ from paperhub.mcp import (
 )
 from paperhub.rag.chroma import ChromaStore
 
+_LOG = logging.getLogger("paperhub.app")
+
 
 def _mcp_servers_toml_path() -> Path:
     """Resolve `mcp_servers.toml`. Env override → backend repo sibling."""
@@ -27,6 +31,36 @@ def _mcp_servers_toml_path() -> Path:
         return Path(env)
     # backend/src/paperhub/app.py → backend/mcp_servers.toml
     return Path(__file__).resolve().parents[2] / "mcp_servers.toml"
+
+
+def _ensure_mcp_servers_toml(path: Path) -> None:
+    """Seed `mcp_servers.toml` from `mcp_servers.toml.example` on first boot.
+
+    The `papers` server is REQUIRED for the agent (no in-process fallback
+    post Task v2.5-4), so a fresh clone with no `mcp_servers.toml` would
+    silently boot with an empty tool palette and the LLM would hallucinate
+    its way through paper_search. Auto-seeding from the checked-in example
+    closes that gap — operators can still edit the file afterwards.
+
+    Skips when the file already exists (operator-customised) or when the
+    example is missing (env-overridden config path that doesn't follow
+    the sibling-template convention).
+    """
+    if path.exists():
+        return
+    example = path.with_name(path.name + ".example")
+    if not example.exists():
+        _LOG.info(
+            "paperhub.app mcp_servers.toml absent + no example at %s; "
+            "registry will start empty (agent paper_search will fail)",
+            example,
+        )
+        return
+    shutil.copyfile(example, path)
+    _LOG.info(
+        "paperhub.app seeded %s from %s (first-boot default)",
+        path.name, example.name,
+    )
 
 
 @asynccontextmanager
@@ -42,8 +76,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Connection is lazy on first tool use so this never blocks startup —
     # critical for loopback servers (e.g. the future `papers` MCP) that
     # listen on the backend's own port and aren't accepting connections yet.
+    mcp_toml = _mcp_servers_toml_path()
+    _ensure_mcp_servers_toml(mcp_toml)
     app.state.mcp_registry = MCPRegistry()
-    await app.state.mcp_registry.startup(_mcp_servers_toml_path())
+    await app.state.mcp_registry.startup(mcp_toml)
 
     # Pre-warm embedder and reranker singletons so the first real paper_qa
     # request doesn't pay the ~5s model-load cost (Plan C field-test #3).

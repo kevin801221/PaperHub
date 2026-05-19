@@ -39,7 +39,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -97,14 +97,40 @@ SERVER_NAME = "papers"
 # ---------------------------------------------------------------------------
 
 
+def _tool_step(
+    ctx: PaperhubPapersRequestContext, tool: str, args: dict[str, Any],
+) -> AbstractAsyncContextManager[Any]:
+    """Build a tracer-step context manager scoped to this MCP call.
+
+    On the loopback path (``caller_supplied_run=True``), the calling agent's
+    outer ``tracer.step`` already records this tool call under the same
+    ``run_id``; writing a second row here would violate the UNIQUE
+    constraint on ``(run_id, branch, step_index)``. Return a ``nullcontext``
+    so the handler can ``async with`` it uniformly and the dispatch body
+    stays branch-free.
+
+    On the external-client path (Claude Desktop / Cursor — the middleware
+    auto-created the run), this wrap is the only source of ``tool_calls``
+    rows; we record args + result the same way the agent's outer wrap does
+    in the loopback case.
+    """
+    if ctx.caller_supplied_run:
+        return nullcontext()
+    step_cm = ctx.tracer.step(agent="research", tool=tool, model=None)
+
+    @asynccontextmanager
+    async def _record(args: dict[str, Any]) -> AsyncIterator[Any]:
+        async with step_cm as step:
+            step.record_args(args)
+            yield step
+
+    return _record(args)
+
+
 async def _search_library_handler(query: str, max_results: int = 8) -> list[dict[str, Any]]:
     ctx = _require_context()
-    async with ctx.tracer.step(
-        agent="research",
-        tool=f"paper_search:{SERVER_NAME}.search_library",
-        model=None,
-    ) as step:
-        step.record_args({"query": query, "max_results": max_results})
+    args = {"query": query, "max_results": max_results}
+    async with _tool_step(ctx, f"paper_search:{SERVER_NAME}.search_library", args) as step:
         hits = [
             asdict(h)
             for h in await search_library_dispatch(
@@ -114,7 +140,8 @@ async def _search_library_handler(query: str, max_results: int = 8) -> list[dict
                 session_id=ctx.session_id,
             )
         ]
-        step.record_result({"count": len(hits)})
+        if step is not None:
+            step.record_result({"count": len(hits)})
     return hits
 
 
@@ -122,19 +149,18 @@ async def _search_semantic_scholar_handler(
     query: str, max_results: int = 8,
 ) -> list[dict[str, Any]]:
     ctx = _require_context()
-    async with ctx.tracer.step(
-        agent="research",
-        tool=f"paper_search:{SERVER_NAME}.search_semantic_scholar",
-        model=None,
+    args = {"query": query, "max_results": max_results}
+    async with _tool_step(
+        ctx, f"paper_search:{SERVER_NAME}.search_semantic_scholar", args,
     ) as step:
-        step.record_args({"query": query, "max_results": max_results})
         hits = [
             asdict(h)
             for h in await search_semantic_scholar_dispatch(
                 query=query, max_results=max_results,
             )
         ]
-        step.record_result({"count": len(hits)})
+        if step is not None:
+            step.record_result({"count": len(hits)})
     return hits
 
 
@@ -142,20 +168,17 @@ async def _find_related_papers_handler(
     paper_id: str, mode: str, max_results: int = 8,
 ) -> list[dict[str, Any]]:
     ctx = _require_context()
-    async with ctx.tracer.step(
-        agent="research",
-        tool=f"paper_search:{SERVER_NAME}.find_related_papers",
-        model=None,
+    args = {"paper_id": paper_id, "mode": mode, "max_results": max_results}
+    async with _tool_step(
+        ctx, f"paper_search:{SERVER_NAME}.find_related_papers", args,
     ) as step:
-        step.record_args(
-            {"paper_id": paper_id, "mode": mode, "max_results": max_results},
-        )
         # ``mode`` is a Literal["cites", "cited_by", "similar"] at the dispatcher
         # boundary; FastMCP hands us a plain string. The dispatcher validates.
         related = await find_related_papers_dispatch(
             paper_id=paper_id, mode=mode, max_results=max_results,  # type: ignore[arg-type]
         )
-        step.record_result({"count": len(related)})
+        if step is not None:
+            step.record_result({"count": len(related)})
     return related
 
 
@@ -320,7 +343,11 @@ class PaperhubPapersRequestContextMiddleware(BaseHTTPMiddleware):
 
             tracer = Tracer(conn, run_id=run_id, branch="")
             ctx = PaperhubPapersRequestContext(
-                conn=conn, session_id=session_id, run_id=run_id, tracer=tracer,
+                conn=conn,
+                session_id=session_id,
+                run_id=run_id,
+                tracer=tracer,
+                caller_supplied_run=caller_supplied_run,
             )
             token = set_request_context(ctx)
             try:

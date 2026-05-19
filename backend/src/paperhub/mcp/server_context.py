@@ -44,12 +44,22 @@ class PaperhubPapersRequestContext:
     Frozen so the same context can be safely shared between concurrent
     awaits inside one tool call (the dispatchers fan out HTTP / SQL
     independently).
+
+    ``caller_supplied_run`` distinguishes the **loopback path** (the agent
+    set ``X-Paperhub-Run-Id`` from its own active run) from the **external
+    client path** (Claude Desktop / Cursor — the middleware auto-created a
+    fresh run). On the loopback path the agent's outer ``tracer.step``
+    already records this tool call, so the handler MUST skip its own inner
+    wrap to avoid a UNIQUE-constraint collision on ``(run_id, branch,
+    step_index)``. On the external path the handler's wrap is the only
+    source of ``tool_calls`` rows, so it stays.
     """
 
     conn: aiosqlite.Connection
     session_id: int
     run_id: int
     tracer: Tracer
+    caller_supplied_run: bool = False
 
 
 _REQUEST_CONTEXT: ContextVar[PaperhubPapersRequestContext] = ContextVar(
