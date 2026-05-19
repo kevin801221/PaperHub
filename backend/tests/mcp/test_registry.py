@@ -43,12 +43,18 @@ class _FakeClient:
         *,
         tools: list[dict[str, Any]] | None = None,
         connect_exc: BaseException | None = None,
+        connect_fails_first_n: int = 0,
         call_result: Any = None,
         call_exc: BaseException | None = None,
     ) -> None:
         self._name = name
         self._tools = tools or []
         self._connect_exc = connect_exc
+        # When > 0, the first N connect() calls raise ``connect_exc``;
+        # subsequent calls succeed. Used to exercise the registry's
+        # retry-after-cooldown path.
+        self._connect_fails_remaining = connect_fails_first_n
+        self._has_recovery_scenario = connect_fails_first_n > 0
         self._call_result = call_result
         self._call_exc = call_exc
         self.connect_calls = 0
@@ -65,6 +71,16 @@ class _FakeClient:
         self.connect_calls += 1
         if self.connected:
             return
+        # Recovery scenario: first N attempts fail, rest succeed.
+        if self._has_recovery_scenario:
+            if self._connect_fails_remaining > 0:
+                self._connect_fails_remaining -= 1
+                if self._connect_exc is not None:
+                    raise self._connect_exc
+                return
+            self.connected = True
+            return
+        # Always-fail scenario.
         if self._connect_exc is not None:
             raise self._connect_exc
         self.connected = True
@@ -156,6 +172,53 @@ async def test_aggregate_tool_schemas_triggers_lazy_connect_and_skips_unreachabl
     assert dead.connect_calls == 1
     assert [s["function"]["name"] for s in schemas] == ["web.search"]
     assert any("dead" in r.getMessage() for r in caplog.records)
+
+
+async def test_aggregate_tool_schemas_retries_failed_server_after_cooldown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: when a daemon is slow to come up (npx download +
+    Playwright init can take 30-60s), the first lazy-connect fails
+    and the registry would PERMANENTLY exclude the server from the
+    palette for the whole backend lifecycle — operators had to
+    restart. Now after a cooldown the registry retries, so the
+    daemon enters the palette without operator intervention."""
+    slow_tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web.search", "description": "",
+                "parameters": {"type": "object"},
+            },
+        },
+    ]
+    # web fails the first connect attempt, succeeds afterwards.
+    web = _FakeClient(
+        "web", tools=slow_tools,
+        connect_exc=MCPUnavailableError("daemon not ready"),
+        connect_fails_first_n=1,
+    )
+    dead = _FakeClient("dead", connect_exc=MCPUnavailableError("permanently down"))
+    _patch_clients(monkeypatch, {"web": web, "dead": dead})
+
+    reg = MCPRegistry()
+    # Aggressive cooldown so the test doesn't sleep 30s.
+    monkeypatch.setattr(reg, "_RETRY_AFTER_SECONDS", 0.0)
+    await reg.startup(_write_two_server_toml(tmp_path))
+
+    # First call: web fails connect → not in palette.
+    schemas_1 = await reg.aggregate_tool_schemas()
+    assert "web.search" not in [s["function"]["name"] for s in schemas_1]
+    assert web.connect_calls == 1
+
+    # Second call after cooldown: web is retried and now succeeds.
+    schemas_2 = await reg.aggregate_tool_schemas()
+    assert "web.search" in [s["function"]["name"] for s in schemas_2]
+    assert web.connect_calls == 2
+
+    # 'dead' was retried too (cooldown elapsed) but stays failed —
+    # both eligible servers are probed each cooldown window.
+    assert dead.connect_calls == 2
 
 
 async def test_aggregate_tool_schemas_caches_result(

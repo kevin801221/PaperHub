@@ -9,10 +9,13 @@ sidesteps the loopback-bootstrap race where the ``papers`` server (Task
 v2.5-3) points at the backend's own port, which is not yet accepting
 connections during lifespan startup.
 
-A server that fails to connect on its first attempt is **remembered as
-failed** for the rest of the registry lifecycle — we don't want a 30-tool
-palette query to hammer a permanently-dead server. Operators restart the
-backend to retry.
+A server that fails to connect is remembered as failed and skipped on
+subsequent palette lookups, but the failure is RETRIED after a 30-second
+cooldown (``_RETRY_AFTER_SECONDS``). This handles the slow-startup race
+without hammering a permanently-dead daemon: e.g. ``npx open-websearch``
+sometimes takes 30-60s on a cold first run (package download + Playwright
+init), and an early lazy-connect would otherwise sticky-fail the server
+for the whole backend lifecycle.
 
 **Autostart (config-driven).** A ``[[server]]`` block may declare a
 ``launch`` list (e.g. ``["npx", "-y", "open-websearch@latest", "serve"]``).
@@ -32,6 +35,7 @@ import logging
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -59,10 +63,23 @@ class MCPRegistry:
     ``aggregate_tool_schemas()`` or ``call()`` triggers their ``connect()``.
     """
 
+    # Cooldown after a failed connect/list_tools before we retry the
+    # server. Without this, a transient startup race (daemon slow to
+    # come up, e.g. npx download + Playwright init) sticks the server
+    # in _connect_failed for the entire backend lifecycle — operators
+    # have to restart the whole process for the agent to see the tool.
+    # 30s is short enough to recover within one or two chat turns,
+    # long enough that a truly-dead daemon isn't probed on every
+    # tool-palette lookup.
+    _RETRY_AFTER_SECONDS: float = 30.0
+
     def __init__(self) -> None:
         self._clients: dict[str, MCPClient] = {}
         self._connect_attempted: set[str] = set()
         self._connect_failed: set[str] = set()
+        # Server name → monotonic time of last failure. Used to gate
+        # the retry-after-cooldown path.
+        self._failed_at: dict[str, float] = {}
         self._aggregated_schemas: list[dict[str, Any]] | None = None
         # Server name → live subprocess we spawned at startup. Terminated
         # on `shutdown()`; populated only for configs with `has_launch`.
@@ -254,6 +271,28 @@ class MCPRegistry:
         the connect happen exactly once and lets concurrent callers
         share the result.
         """
+        now = time.monotonic()
+        # If any previously-failed server has cooled down past the
+        # retry window, drop it from the failure set AND invalidate
+        # the aggregated cache so the loop below re-probes it. This
+        # is what lets a slow-to-start daemon (npx download +
+        # Playwright init) eventually enter the palette without
+        # restarting the backend.
+        retry_candidates = [
+            n for n in self._connect_failed
+            if now - self._failed_at.get(n, 0.0) >= self._RETRY_AFTER_SECONDS
+        ]
+        if retry_candidates:
+            for n in retry_candidates:
+                self._connect_failed.discard(n)
+                self._connect_attempted.discard(n)
+                self._failed_at.pop(n, None)
+                _LOG.info(
+                    "mcp.registry retrying previously-failed server=%s "
+                    "after %.0fs cooldown", n, self._RETRY_AFTER_SECONDS,
+                )
+            self._aggregated_schemas = None
+
         if self._aggregated_schemas is not None:
             return self._aggregated_schemas
         if self._connect_lock is None:
@@ -270,6 +309,7 @@ class MCPRegistry:
                     continue
                 await self._ensure_connected(name, client)
                 if name in self._connect_failed:
+                    self._failed_at[name] = time.monotonic()
                     continue
                 try:
                     schemas = await client.list_tools()
@@ -280,6 +320,7 @@ class MCPRegistry:
                         exc,
                     )
                     self._connect_failed.add(name)
+                    self._failed_at[name] = time.monotonic()
                     continue
                 aggregated.extend(schemas)
 
