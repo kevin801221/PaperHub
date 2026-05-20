@@ -1,7 +1,12 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import { Copy, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
+
+// KaTeX stylesheet — required for rehype-katex output to render correctly.
+import "katex/dist/katex.min.css";
 
 import type { ChatMessage } from "@/types/domain";
 import { Button } from "@/components/ui/button";
@@ -64,7 +69,10 @@ export function MessageBubble({ message, onRetry, backendSessionId }: Props) {
             // react-markdown renders to React elements (no dangerouslySetInnerHTML).
             // Raw HTML in source is not rendered as HTML by default — exactly what
             // we want for arbitrary tool-result strings flowing into assistant content.
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm, remarkMath]}
+              rehypePlugins={[rehypeKatex]}
+            >
               {message.content || " "}
             </ReactMarkdown>
           )}

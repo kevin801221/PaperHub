@@ -157,4 +157,41 @@ describe("MessageBubble", () => {
     // The literal characters should appear (react-markdown shows them as text).
     expect(article?.textContent).toContain("<img");
   });
+
+  it("renders inline LaTeX math as KaTeX (not raw $...$)", () => {
+    const { container } = render(
+      <MessageBubble
+        message={{
+          role: "assistant",
+          content: "The loss is $E = mc^2$ in this model.",
+          run_id: 1,
+          status: "ok",
+        }}
+      />,
+    );
+    // rehype-katex emits .katex spans; the raw dollar-delimited source
+    // must NOT survive into the rendered text.
+    expect(container.querySelector(".katex")).not.toBeNull();
+    const article = container.querySelector("article");
+    expect(article?.textContent).not.toContain("$E = mc^2$");
+  });
+
+  it("renders block LaTeX math ($$...$$) as KaTeX", () => {
+    const { container } = render(
+      <MessageBubble
+        message={{
+          role: "assistant",
+          content: "Objective:\n\n$$\\sum_{i=1}^{n} \\alpha_i x_i$$\n\nDone.",
+          run_id: 1,
+          status: "ok",
+        }}
+      />,
+    );
+    // KaTeX rendered the block (rehype-katex emits .katex spans).
+    expect(container.querySelector(".katex")).not.toBeNull();
+    const article = container.querySelector("article");
+    // The raw $$ delimiters must not survive (KaTeX keeps the LaTeX source
+    // in a MathML annotation, so we check the delimiters, not \\sum).
+    expect(article?.textContent).not.toContain("$$");
+  });
 });
