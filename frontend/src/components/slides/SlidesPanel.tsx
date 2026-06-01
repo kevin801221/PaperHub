@@ -9,9 +9,11 @@ import {
 import { Document, Page, pdfjs } from "react-pdf";
 import {
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Download,
+  History,
   Loader2,
   Pencil,
   X,
@@ -25,6 +27,7 @@ import {
 } from "@/store/slides";
 import { fetchDeckPdfData, deckPdfUrl, deckTexUrl } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { VersionList } from "./VersionList";
 
 // pdf.js needs a worker; resolve it from the installed pdfjs-dist via Vite's
 // import.meta.url so the worker is bundled + served from the app origin.
@@ -277,6 +280,13 @@ export function SlidesPanel({
   // editing; the real note lives on the owning slide's first page.
   const noteEditable =
     !!onSaveNote && !busy && speakerNote !== CONTINUED_NOTE;
+
+  // Collapsible version-history drawer (F4.5 Task 13.3). Starts collapsed so
+  // the panel's visual budget defaults to slide + speaker-note; opening is one
+  // click. `openActive` is wired into `VersionList.onOpen` so clicking "Open
+  // Slide" on the active card collapses the drawer back to the slide view.
+  const [showVersions, setShowVersions] = useState(false);
+  const openActiveDeck = useCallback(() => setShowVersions(false), []);
 
   const beginEditNote = () => {
     setNoteDraft(speakerNote && speakerNote !== CONTINUED_NOTE ? speakerNote : "");
@@ -558,6 +568,36 @@ export function SlidesPanel({
           <p className="flex-1 min-h-0 text-xs text-muted-foreground italic">
             No speaker note for this slide
           </p>
+        )}
+      </div>
+
+      {/* Version-history drawer (F4.5). Collapsed by default; toggled by a
+          header button styled like the rest of the panel's affordances. The
+          body's max-height + overflow-y-auto keeps the list bounded so a deck
+          with many snapshots doesn't push the speaker-note pane offscreen. */}
+      <div className="shrink-0 border-t border-border bg-card">
+        <button
+          type="button"
+          onClick={() => setShowVersions((v) => !v)}
+          className="flex w-full items-center gap-1.5 px-3 py-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground hover:bg-muted/50 transition-colors"
+          aria-expanded={showVersions}
+          aria-controls="slides-version-history"
+        >
+          {showVersions ? (
+            <ChevronDown className="h-3 w-3" aria-hidden />
+          ) : (
+            <ChevronRight className="h-3 w-3" aria-hidden />
+          )}
+          <History className="h-3 w-3" aria-hidden />
+          <span>Version history</span>
+        </button>
+        {showVersions && (
+          <div
+            id="slides-version-history"
+            className="max-h-64 overflow-y-auto border-t border-border"
+          >
+            <VersionList sessionId={sessionId} onOpen={openActiveDeck} />
+          </div>
         )}
       </div>
     </div>
