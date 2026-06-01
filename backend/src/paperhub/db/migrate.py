@@ -267,6 +267,74 @@ async def apply_schema(conn: aiosqlite.Connection) -> None:
     # -----------------------------------------------------------------------
 
     # -----------------------------------------------------------------------
+    # F4.5 (v2.25): Drop decks.theme + add decks.current_version_id + create
+    # slide_style_overrides (§III-7). Idempotent.
+    #
+    # SQLite < 3.35 cannot DROP COLUMN directly, so we use the table-rebuild
+    # pattern — `theme` had a NOT NULL default of 'metropolis', so dropping
+    # it silently is safe (preamble is the source of truth in F4.5, resolved
+    # via slide_style_overrides -> slide_style_global memory -> default file).
+    # -----------------------------------------------------------------------
+    async with conn.execute("PRAGMA table_info(decks)") as cur:
+        decks_cols = {row[1] for row in await cur.fetchall()}
+
+    if "theme" in decks_cols or "current_version_id" not in decks_cols:
+        await conn.executescript(
+            """
+            CREATE TABLE decks_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                run_id INTEGER REFERENCES runs(id) ON DELETE SET NULL,
+                tex_path TEXT NOT NULL,
+                pdf_path TEXT,
+                speaker_notes_json TEXT,
+                plan_json TEXT,
+                page_count INTEGER NOT NULL DEFAULT 0,
+                current_version_id TEXT,
+                contributing_paper_ids_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','error')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE (session_id)
+            );
+            INSERT INTO decks_new (
+                id, session_id, run_id, tex_path, pdf_path, speaker_notes_json,
+                plan_json, page_count, current_version_id,
+                contributing_paper_ids_json, status, created_at, updated_at
+            )
+            SELECT id, session_id, run_id, tex_path, pdf_path, speaker_notes_json,
+                   plan_json, page_count, NULL,
+                   contributing_paper_ids_json, status, created_at, updated_at
+            FROM decks;
+            DROP TABLE decks;
+            ALTER TABLE decks_new RENAME TO decks;
+            """
+        )
+        await conn.commit()
+
+    # Create slide_style_overrides if missing (pre-existing DBs created before
+    # F4.5 won't have it; schema.sql will create it on fresh DBs but the
+    # explicit guard keeps the migration safe for both paths).
+    async with conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+        "AND name='slide_style_overrides'"
+    ) as cur:
+        exists = await cur.fetchone()
+    if not exists:
+        await conn.execute(
+            """
+            CREATE TABLE slide_style_overrides (
+                session_id INTEGER PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                preamble_tex TEXT NOT NULL,
+                source TEXT NOT NULL CHECK (source IN ('user_request','agent_inferred','global_memory_projection')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            """
+        )
+        await conn.commit()
+
+    # -----------------------------------------------------------------------
     # Rebuild the FTS index from paper_content if the index is empty
     # but the source table has rows (handles upgrades from pre-FTS schemas).
     # -----------------------------------------------------------------------

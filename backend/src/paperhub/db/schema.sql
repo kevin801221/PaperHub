@@ -109,7 +109,9 @@ CREATE TABLE IF NOT EXISTS decks (
     speaker_notes_json TEXT,
     plan_json TEXT,
     page_count INTEGER NOT NULL DEFAULT 0,
-    theme TEXT NOT NULL DEFAULT 'metropolis',
+    -- v2.25 / F4.5: `theme` column dropped (preamble is source of truth via
+    -- slide_style_overrides + slide_style_global memory + slide_style_default.tex).
+    current_version_id TEXT,
     contributing_paper_ids_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL DEFAULT 'ok' CHECK (status IN ('ok','error')),
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -127,6 +129,16 @@ CREATE TABLE IF NOT EXISTS deck_slides (
     page_start INTEGER NOT NULL,             -- 1-based PDF page this frame starts on
     page_end INTEGER NOT NULL,               -- 1-based PDF page this frame ends on
     UNIQUE (deck_id, slide_index)
+);
+
+-- v2.25 / F4.5: per-session Beamer preamble override (FR-12 configurable style).
+-- Source-of-truth precedence: this table > slide_style_global memory > default file.
+CREATE TABLE IF NOT EXISTS slide_style_overrides (
+    session_id INTEGER PRIMARY KEY REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    preamble_tex TEXT NOT NULL,
+    source TEXT NOT NULL CHECK (source IN ('user_request','agent_inferred','global_memory_projection')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
