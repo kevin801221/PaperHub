@@ -167,6 +167,11 @@ async def compile_with_revise(
         if attempt <= max_retries:
             # Either a hard compile error OR a clean-exit-but-Overfull run —
             # either way, ask the LLM to tighten/fix the TeX and retry.
+            # Transient-error retry (Gemini/Vertex connection drops, 5xx) is
+            # the LLM-client's responsibility — litellm.num_retries is set
+            # globally at app lifespan startup (see paperhub.app._lifespan).
+            # This loop only handles compile outcomes, not connection-drop
+            # recovery.
             current = sanitize_frametitles(await revise(last_log[-4000:], current))
         elif pdf_produced:
             # Retries exhausted but a PDF exists (overfull every time).

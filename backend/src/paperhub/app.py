@@ -46,6 +46,15 @@ _LOG = logging.getLogger("paperhub.app")
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Transient connection drops to upstream LLM providers (Gemini/Vertex
+    # mid-stream disconnects, 5xx, etc.) are an expected operating mode.
+    # litellm.num_retries makes EVERY litellm.acompletion / completion call
+    # retry on those errors before raising — across brief, plan, render,
+    # revise, notes, edit, paper_qa, chitchat. Permanent errors (bad
+    # request, auth) still propagate immediately.
+    import litellm
+    litellm.num_retries = 3
+
     settings = load_settings()
     app.state.settings = settings
     async with open_db(settings.db_path) as conn:
