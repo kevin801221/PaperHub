@@ -283,6 +283,7 @@ async def run_gather_context(
     tools_schema = _callback_tools(has_conn=conn is not None)
 
     callback_log: list[dict[str, str]] = []
+    llm_turn_log: list[dict[str, Any]] = []
     callback_reads_used = 0
 
     if llm_acompletion is None:
@@ -302,15 +303,40 @@ async def run_gather_context(
             }
         )
         final_text = ""
-        for _turn in range(max_callback_calls + 3):
+        turn = -1
+        for turn in range(max_callback_calls + 3):
             kwargs: dict[str, Any] = {"model": model, "messages": messages}
-            if tools_schema:
+            # When the callback budget has been exhausted, REMOVE the tool
+            # palette entirely so the LLM cannot keep calling tools. Returning
+            # an "error: budget exhausted" tool result wasn't strong enough on
+            # its own (observed with Gemini 3.1 Pro on the F4.5 real-API gate:
+            # the model kept calling list_sections/read_section regardless).
+            budget_exhausted = callback_reads_used >= max_callback_calls
+            if tools_schema and not budget_exhausted:
                 kwargs["tools"] = tools_schema
                 kwargs["tool_choice"] = "auto"
             response = await llm_acompletion(**kwargs)
             msg = response["choices"][0]["message"]
             tool_calls = msg.get("tool_calls") or []
             content = str(msg.get("content") or "")
+            llm_turn_log.append(
+                {
+                    "turn": turn,
+                    "budget_exhausted": budget_exhausted,
+                    "tools_offered": bool(kwargs.get("tools")),
+                    "content_preview": content[:200],
+                    "content_len": len(content),
+                    "tool_calls": [
+                        {
+                            "name": tc.get("function", {}).get("name", ""),
+                            "arguments": tc.get("function", {}).get(
+                                "arguments", ""
+                            )[:200],
+                        }
+                        for tc in tool_calls
+                    ],
+                }
+            )
             if not tool_calls:
                 final_text = content.strip()
                 break
@@ -376,6 +402,21 @@ async def run_gather_context(
                 )
 
         if not final_text:
+            # Per the agent-flow observability iron rule (CLAUDE.md): record
+            # the full reconstruct-able state BEFORE marking error. Without
+            # this, the trace can't answer "what did the LLM keep doing?".
+            step.record_result(
+                {
+                    "final_text": "",
+                    "final_text_len": 0,
+                    "parse_error": "no_final_response_after_budget",
+                    "callback_reads_count": callback_reads_used,
+                    "callback_reads_summary": callback_log,
+                    "llm_turns": llm_turn_log,
+                    "max_callback_calls": max_callback_calls,
+                    "turns_used": turn + 1,
+                }
+            )
             step.mark_error("gather_context_no_final_response")
             raise RuntimeError(
                 "gather_context: LLM never emitted a no-tool-calls response"
@@ -395,6 +436,7 @@ async def run_gather_context(
                     "final_text": final_text,
                     "callback_reads": callback_log,
                     "parse_error": f"{type(exc).__name__}: {exc}",
+                    "llm_turns": llm_turn_log,
                 }
             )
             step.mark_error("gather_context_parse_failed")
@@ -407,6 +449,7 @@ async def run_gather_context(
                 "n_key_equations": len(bundle.key_equations),
                 "n_section_excerpts": len(bundle.section_excerpts),
                 "callback_reads": callback_log,
+                "llm_turns": llm_turn_log,
                 "final_text_len": len(final_text),
             }
         )
