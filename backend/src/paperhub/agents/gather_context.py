@@ -52,7 +52,14 @@ __all__ = ["MAX_CALLBACK_CALLS", "run_gather_context"]
 LlmAcompletion = Callable[..., Awaitable[Any]]
 
 MAX_CALLBACK_CALLS = 3
+_MAX_EMPTY_REPROMPTS = 2
 _FENCE_RE = re.compile(r"^```[a-zA-Z]*\n?|\n?```$")
+_EMPTY_REPROMPT_TEXT = (
+    "Your previous response was empty. Emit the final "
+    "PaperContextBundle JSON object now — start with `{` "
+    "and end with `}`. Do NOT call any more tools. Output "
+    "the JSON object only — no markdown fence, no preface."
+)
 
 
 def _format_figure_inventory_block(
@@ -304,7 +311,8 @@ async def run_gather_context(
         )
         final_text = ""
         turn = -1
-        for turn in range(max_callback_calls + 3):
+        empty_reprompts_used = 0
+        for turn in range(max_callback_calls + 5):
             kwargs: dict[str, Any] = {"model": model, "messages": messages}
             # When the callback budget has been exhausted, REMOVE the tool
             # palette entirely so the LLM cannot keep calling tools. Returning
@@ -319,27 +327,44 @@ async def run_gather_context(
             msg = response["choices"][0]["message"]
             tool_calls = msg.get("tool_calls") or []
             content = str(msg.get("content") or "")
-            llm_turn_log.append(
-                {
-                    "turn": turn,
-                    "budget_exhausted": budget_exhausted,
-                    "tools_offered": bool(kwargs.get("tools")),
-                    "content_preview": content[:200],
-                    "content_len": len(content),
-                    "tool_calls": [
-                        {
-                            "name": tc.get("function", {}).get("name", ""),
-                            "arguments": tc.get("function", {}).get(
-                                "arguments", ""
-                            )[:200],
-                        }
-                        for tc in tool_calls
-                    ],
-                }
-            )
+            turn_log_entry: dict[str, Any] = {
+                "turn": turn,
+                "budget_exhausted": budget_exhausted,
+                "tools_offered": bool(kwargs.get("tools")),
+                "content_preview": content[:200],
+                "content_len": len(content),
+                "tool_calls": [
+                    {
+                        "name": tc.get("function", {}).get("name", ""),
+                        "arguments": tc.get("function", {}).get(
+                            "arguments", ""
+                        )[:200],
+                    }
+                    for tc in tool_calls
+                ],
+            }
             if not tool_calls:
-                final_text = content.strip()
+                if content.strip():
+                    llm_turn_log.append(turn_log_entry)
+                    final_text = content.strip()
+                    break
+                # Empty content + no tool_calls — the LLM gave up before
+                # exhausting its budget. Re-prompt with an explicit "emit
+                # the JSON now" nudge (real-API Run 338 / case 2 showed
+                # Gemini hitting this on turn 1/3). Cap at
+                # ``_MAX_EMPTY_REPROMPTS`` so a genuinely silent LLM still
+                # falls through to the error path below.
+                if empty_reprompts_used < _MAX_EMPTY_REPROMPTS:
+                    empty_reprompts_used += 1
+                    turn_log_entry["reprompt_for_empty"] = empty_reprompts_used
+                    llm_turn_log.append(turn_log_entry)
+                    messages.append(
+                        {"role": "user", "content": _EMPTY_REPROMPT_TEXT}
+                    )
+                    continue
+                llm_turn_log.append(turn_log_entry)
                 break
+            llm_turn_log.append(turn_log_entry)
             messages.append(
                 {
                     "role": "assistant",

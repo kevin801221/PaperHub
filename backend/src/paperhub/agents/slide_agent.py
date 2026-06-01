@@ -11,6 +11,7 @@ as the existing compile_with_revise's imperfect-deck-shipping.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -43,6 +44,58 @@ from paperhub.tracing.tracer import Tracer
 LlmAcompletion = Callable[..., Awaitable[Any]]
 
 DEFAULT_MAX_TOOL_CALLS: Final[int] = 15
+
+# Transient connection-drop signatures we retry mid-loop. Mirrors
+# ``LiteLlmAdapter._is_transient_stream_error`` — same class of fault, but
+# the slide_agent uses non-streaming ``acompletion`` calls inside its
+# tool-use loop. ``litellm.num_retries=3`` (set in app lifespan) doesn't
+# cover this reliably: it fires only BEFORE the call starts, and the
+# Gemini ``APIConnectionError`` class isn't always in litellm's
+# retry-eligible set (real-API Run 341 / case 5 crashed step #5 with
+# ``GeminiException - Server disconnected``).
+_TRANSIENT_SUBSTRINGS: tuple[str, ...] = (
+    "Server disconnected",
+    "MidStreamFallbackError",
+    "APIConnectionError",
+    "ServerDisconnectedError",
+    "ConnectError",
+    "RemoteProtocolError",
+    "ReadTimeout",
+    "ConnectTimeout",
+    "503",
+    "504",
+    "502",
+    "GeminiException",
+)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    needle = type(exc).__name__ + ": " + str(exc)
+    return any(s in needle for s in _TRANSIENT_SUBSTRINGS)
+
+
+async def _acompletion_with_retry(
+    llm_acompletion: LlmAcompletion,
+    *,
+    max_attempts: int = 3,
+    **kwargs: Any,
+) -> Any:
+    """Wrap one ``acompletion`` call in a transient-retry loop.
+
+    Backoff: 1s, 2s, 4s. Non-transient exceptions propagate immediately.
+    """
+    last_exc: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await llm_acompletion(**kwargs)
+        except Exception as exc:
+            last_exc = exc
+            if attempt >= max_attempts or not _is_transient(exc):
+                raise
+            await asyncio.sleep(1.0 * (2 ** (attempt - 1)))
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("acompletion retry loop fell through")
 
 
 @dataclass(frozen=True)
@@ -476,7 +529,8 @@ async def run_slide_agent(
         tool_call_log: list[dict[str, Any]] = []
 
         while tool_calls_used < max_tool_calls:
-            response = await llm_acompletion(
+            response = await _acompletion_with_retry(
+                llm_acompletion,
                 model=model,
                 messages=messages,
                 tools=tools_schema,

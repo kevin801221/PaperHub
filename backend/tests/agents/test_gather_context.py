@@ -208,12 +208,16 @@ async def test_gather_context_budget_exhaustion_drops_tools_and_records_turn_log
     """
     asset, source_dir = fake_asset
     llm = AsyncMock()
-    # 3 tool calls burn the budget; the 4th call must omit tools, and the
-    # LLM (mocked) emits empty content anyway → RuntimeError.
+    # 3 tool calls burn the budget; the 4th call must omit tools. The LLM
+    # then emits empty content; the empty-response re-prompt fires up to
+    # ``_MAX_EMPTY_REPROMPTS`` (2) times — when those also come back empty
+    # the loop falls through to the error path → RuntimeError.
     llm.side_effect = [
         _msg_tool_call("list_sections", {}),
         _msg_tool_call("read_section", {"name": "Method"}),
         _msg_tool_call("read_section", {"name": "Results"}),
+        _msg_no_tool_calls(""),
+        _msg_no_tool_calls(""),
         _msg_no_tool_calls(""),
     ]
 
@@ -235,7 +239,9 @@ async def test_gather_context_budget_exhaustion_drops_tools_and_records_turn_log
         )
 
     # The 4th call must NOT have offered tools (budget exhausted → no palette).
-    assert llm.await_count == 4
+    # Empty-content re-prompts fired twice more (5th and 6th calls) before
+    # the loop gave up.
+    assert llm.await_count == 6
     fourth_kwargs = llm.await_args_list[3].kwargs
     assert "tools" not in fourth_kwargs, (
         f"tools should be dropped on post-budget turn; got {fourth_kwargs!r}"
@@ -264,12 +270,65 @@ async def test_gather_context_budget_exhaustion_drops_tools_and_records_turn_log
     assert result["parse_error"] == "no_final_response_after_budget"
     assert result["callback_reads_count"] == 3
     assert result["max_callback_calls"] == 3
-    assert result["turns_used"] == 4
-    assert len(result["llm_turns"]) == 4
-    # First three turns should have offered tools; the fourth should not.
+    assert result["turns_used"] == 6
+    assert len(result["llm_turns"]) == 6
+    # First three turns should have offered tools; the fourth onwards should not.
     assert result["llm_turns"][0]["tools_offered"] is True
     assert result["llm_turns"][3]["tools_offered"] is False
     assert result["llm_turns"][3]["budget_exhausted"] is True
+    # Two empty-content re-prompts fired (turns 4 and 5).
+    assert result["llm_turns"][3]["reprompt_for_empty"] == 1
+    assert result["llm_turns"][4]["reprompt_for_empty"] == 2
+
+
+@pytest.mark.asyncio
+async def test_gather_context_recovers_from_empty_response_via_reprompt(
+    fake_asset: tuple[PaperAsset, Path],
+    fake_tracer: Tracer,
+) -> None:
+    """LLM emits empty content + no tool_calls before exhausting budget →
+    we re-prompt with an explicit "emit the JSON now" nudge → LLM recovers
+    on the next turn. Real-API Run 338 / case 2 (slides-single-faster)
+    showed Gemini doing this on turn 1/3.
+    """
+    asset, source_dir = fake_asset
+    payload = _bundle_payload(paper_id=42, paper_idx=0)
+    llm = AsyncMock()
+    llm.side_effect = [
+        # Turn 0: empty response, no tool calls (the bug)
+        _msg_no_tool_calls(""),
+        # Turn 1 (after re-prompt): final JSON
+        _msg_no_tool_calls(json.dumps(payload)),
+    ]
+
+    bundle = await run_gather_context(
+        paper_id=42,
+        paper_idx=0,
+        asset=asset,
+        source_dir=source_dir,
+        paper_title="T",
+        paper_authors=["A"],
+        paper_year=2025,
+        paper_abstract="abs",
+        paper_newcommands=[],
+        conn=None,
+        tracer=fake_tracer,
+        model="stub",
+        llm_acompletion=llm,
+    )
+
+    assert bundle.paper_id == 42
+    assert bundle.paper_idx == 0
+    assert llm.await_count == 2
+    # The second call's messages list must end with the re-prompt nudge.
+    second_call_messages = llm.await_args_list[1].kwargs["messages"]
+    assert any(
+        "Emit the final" in (m.get("content") or "")
+        for m in second_call_messages
+        if m.get("role") == "user"
+    ), (
+        "second call should include the empty-response re-prompt user message"
+    )
 
 
 @pytest.mark.asyncio

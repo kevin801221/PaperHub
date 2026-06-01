@@ -257,6 +257,73 @@ async def test_replace_frame_then_done_resolves_math_violation(
 
 
 @pytest.mark.asyncio
+async def test_slide_agent_retries_on_transient_gemini_disconnect(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, fake_tracer: Any
+) -> None:
+    """First acompletion raises a transient ``Server disconnected`` error →
+    the retry helper kicks in → next call succeeds. Real-API Run 341 / case
+    5 (slides-multi-zh) hit ``litellm.APIConnectionError`` mid-loop; the
+    global ``litellm.num_retries=3`` did not catch it.
+    """
+    bundles = [_bundle()]
+    workdir = tmp_path / "slides"
+    workdir.mkdir()
+
+    class _Disconnect(Exception):
+        pass
+
+    call_count = {"n": 0}
+
+    async def flaky_llm(**kwargs: Any) -> Any:
+        call_count["n"] += 1
+        # First call: simulate Gemini server disconnect.
+        if call_count["n"] == 1:
+            raise _Disconnect("Server disconnected")
+        # Second call (the retry): drive a normal happy path.
+        if call_count["n"] == 2:
+            return _tool_call_msg("initial_draft", {"deck_tex": _GOOD_DECK})
+        if call_count["n"] == 3:
+            return _tool_call_msg("compile_check", {})
+        return _tool_call_msg("done", {})
+
+    async def fake_compile_check(**kw: Any) -> CompileCheckResult:
+        return CompileCheckResult(
+            ok=True,
+            page_count=1,
+            compile_errors=[],
+            frame_overflow=[],
+            unrendered_math_frames=[],
+        )
+
+    # Skip the real backoff so the test is fast.
+    async def no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "paperhub.agents.slide_agent.run_compile_check", fake_compile_check
+    )
+    monkeypatch.setattr("paperhub.agents.slide_agent.asyncio.sleep", no_sleep)
+
+    result = await run_slide_agent(
+        bundles=bundles,
+        task_description="x",
+        response_language="en",
+        resolved_preamble=r"\documentclass{beamer}",
+        workdir=workdir,
+        existing_deck_tex=None,
+        figure_inventory={},
+        memory_context="",
+        tracer=fake_tracer,
+        model="stub",
+        llm_acompletion=flaky_llm,
+    )
+
+    assert result.satisfied is True
+    # At least one retry happened (first call raised, second succeeded).
+    assert call_count["n"] >= 2
+
+
+@pytest.mark.asyncio
 async def test_tool_call_budget_exhaustion_ships_imperfect(
     tmp_path: Any, monkeypatch: pytest.MonkeyPatch, fake_tracer: Any
 ) -> None:
