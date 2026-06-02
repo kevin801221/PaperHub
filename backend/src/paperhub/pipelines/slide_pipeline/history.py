@@ -60,7 +60,7 @@ class VersionHistory:
         tex_content: str,
         description: str = "Successful compile",
         speaker_notes: dict[str, str] | None = None,
-    ) -> bool:
+    ) -> str | None:
         """
         Save a new version after successful compilation.
 
@@ -72,12 +72,17 @@ class VersionHistory:
                 automatically so callers don't have to thread the data through.
 
         Returns:
-            True if successful, False otherwise
+            The new ``version_<...>`` filename stem (without ``.json``) on success,
+            or ``None`` if the snapshot could not be written. F4.5 callers update
+            ``runs.deck_version_id`` + ``decks.current_version_id`` from this so
+            per-turn deck cards on chat replay point at THIS turn's snapshot.
         """
         try:
             timestamp = datetime.now()
-            # Use timestamp as filename for easy sorting
-            timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S")
+            # Microsecond suffix so two compiles inside the same second never
+            # collide on a filename (F4 edit flows can stamp twice in quick
+            # succession; F4.5 sl_emit uses the same _%f suffix).
+            timestamp_str = timestamp.strftime("%Y%m%d_%H%M%S_%f")
 
             if speaker_notes is None:
                 snapshot_notes = self._load_workspace_speaker_notes()
@@ -91,7 +96,8 @@ class VersionHistory:
                 "speaker_notes": snapshot_notes,  # may be None for decks without notes yet
             }
 
-            version_file = self.history_dir / f"version_{timestamp_str}.json"
+            version_id = f"version_{timestamp_str}"
+            version_file = self.history_dir / f"{version_id}.json"
             with open(version_file, "w", encoding="utf-8") as f:
                 json.dump(version_data, f, indent=2, ensure_ascii=False)
 
@@ -100,11 +106,53 @@ class VersionHistory:
                 f"Saved version: {description} at {timestamp_str} "
                 f"(speaker notes bundled: {note_count})"
             )
-            return True
+            return version_id
 
         except Exception as e:
             logging.error(f"Failed to save version: {e}")
+            return None
+
+    def patch_snapshot_notes(
+        self, version_id: str, speaker_notes: dict[str, str] | None
+    ) -> bool:
+        """Rewrite the ``speaker_notes`` field of an existing snapshot in place.
+
+        Used by the notes-only flow: adding/editing notes is an addendum to
+        the active version, not a content change that warrants a new
+        version_id. So instead of stamping a new snapshot, we patch the
+        current one — a later restore of that version brings the notes back.
+
+        Args:
+            version_id: The version filename stem (``version_<...>``, no
+                ``.json``). The same value stored on
+                ``decks.current_version_id`` / ``runs.deck_version_id``.
+            speaker_notes: New notes dict, or None to record "no notes".
+
+        Returns:
+            True when the file was patched, False on any error.
+        """
+        path = self.history_dir / f"{version_id}.json"
+        if not path.exists():
             return False
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logging.error("patch_snapshot_notes: read %s failed: %r", path, exc)
+            return False
+        data["speaker_notes"] = (
+            {str(k): v for k, v in speaker_notes.items()}
+            if speaker_notes
+            else None
+        )
+        try:
+            path.write_text(
+                json.dumps(data, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logging.error("patch_snapshot_notes: write %s failed: %r", path, exc)
+            return False
+        return True
 
     def list_versions(self) -> list[dict[str, str]]:
         """
