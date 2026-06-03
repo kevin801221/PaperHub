@@ -264,7 +264,9 @@ class VersionHistory:
             logging.error(f"Failed to read version {filename}: {e}")
             return None
 
-    def restore_version(self, filename: str, slides_tex_path: str) -> bool:
+    def restore_version(
+        self, filename: str, slides_tex_path: str
+    ) -> tuple[bool, bool]:
         """
         Restore a specific version to slides.tex AND its bundled speaker_notes.json.
 
@@ -283,24 +285,26 @@ class VersionHistory:
             slides_tex_path: Path to slides.tex file
 
         Returns:
-            True if successful, False otherwise
+            ``(ok, pdf_restored_from_cache)``. ``pdf_restored_from_cache`` is
+            ``True`` iff this call successfully copied a cached PDF onto
+            ``deck.pdf`` — F4.5 Task 16.2 uses it to skip ``pdflatex``.
         """
         version_file = self.history_dir / filename
         if not version_file.exists():
             logging.error(f"Version {filename} not found")
-            return False
+            return False, False
 
         try:
             with open(version_file, encoding="utf-8") as f:
                 data = json.load(f)
         except Exception as e:
             logging.error(f"Failed to read version {filename}: {e}")
-            return False
+            return False, False
 
         tex_content = data.get("tex_content")
         if tex_content is None:
             logging.error(f"Version {filename} has no tex_content")
-            return False
+            return False, False
 
         try:
             with open(slides_tex_path, "w", encoding="utf-8") as f:
@@ -308,12 +312,13 @@ class VersionHistory:
             logging.info(f"Restored slides.tex from version {filename}")
         except Exception as e:
             logging.error(f"Failed to restore slides.tex: {e}")
-            return False
+            return False, False
 
         # F4.5 Phase 16: if the snapshot cached its compiled PDF, copy it back
         # to deck.pdf so the caller can skip a recompile. Soft-fail: the tex
         # write above already succeeded, so a missing/unreadable cached PDF
         # just leaves the caller's existing fallback (recompile) in play.
+        pdf_restored = False
         pdf_filename = data.get("pdf_filename")
         if isinstance(pdf_filename, str) and pdf_filename:
             cached_pdf = self.history_dir / pdf_filename
@@ -323,6 +328,7 @@ class VersionHistory:
                     logging.info(
                         f"Restored deck.pdf from cached {pdf_filename}"
                     )
+                    pdf_restored = True
                 except OSError as exc:
                     logging.warning(
                         "Failed to restore cached deck.pdf for %s: %r",
@@ -348,14 +354,14 @@ class VersionHistory:
                         )
             except Exception as e:
                 logging.error(f"Failed to restore speaker_notes.json: {e}")
-                return False
+                return False, pdf_restored
         else:
             logging.debug(
                 f"Version {filename} predates speaker-note tracking; leaving "
                 "current speaker_notes.json untouched."
             )
 
-        return True
+        return True, pdf_restored
 
     def delete_version(self, filename: str) -> bool:
         """

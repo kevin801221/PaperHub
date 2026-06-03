@@ -432,48 +432,64 @@ async def restore_deck_version(
 
         bundled_notes = await asyncio.to_thread(_read_snapshot_notes)
 
-        def _restore() -> bool:
+        def _restore() -> tuple[bool, bool]:
             if not snapshot_path.exists():
-                return False
+                return False, False
             tex_path = slides_dir / "deck.tex"
             tex_path.parent.mkdir(parents=True, exist_ok=True)
             return VersionHistory(slides_dir).restore_version(
                 f"{version_id}.json", str(tex_path)
             )
 
-        ok = await asyncio.to_thread(_restore)
+        ok, pdf_from_cache = await asyncio.to_thread(_restore)
         if not ok:
             raise HTTPException(
                 status_code=404,
                 detail=f"snapshot {version_id} not found or unreadable",
             )
 
-        # Recompile so deck.pdf reflects the restored tex. The snapshot was a
-        # successful compile when it was saved, so no LLM-revise is needed —
-        # we pass an identity revise callback and the standard 2 attempts
-        # (the first run resolves \tableofcontents-style refs; the second
-        # produces a final, ref-stable PDF).
-        async def _identity_revise(_log: str, tex: str) -> str:
-            return tex
-
+        pdf_path = slides_dir / "deck.pdf"
         restored_tex = await asyncio.to_thread(
             (slides_dir / "deck.tex").read_text, encoding="utf-8"
         )
-        result = await compile_mod.compile_with_revise(
-            tex=restored_tex,
-            workdir=slides_dir,
-            tex_name="deck.tex",
-            revise=_identity_revise,
-            max_retries=1,
-        )
+        if pdf_from_cache:
+            # Hot path (F4.5 Task 16.2): the cached PDF is already on disk —
+            # skip the ~4-6s pdflatex roundtrip. Page count comes from the
+            # cached file (best-effort: 0 on parse failure, same contract as
+            # compile._page_count).
+            page_count = await asyncio.to_thread(
+                compile_mod._page_count, pdf_path
+            )
+            compile_ok = True
+            result_tex = restored_tex
+            result_page_count = page_count
+        else:
+            # Legacy snapshot (no pdf_filename): recompile so deck.pdf reflects
+            # the restored tex. The snapshot was a successful compile when it
+            # was saved, so no LLM-revise is needed — we pass an identity
+            # revise callback and 1 retry (first run resolves
+            # \tableofcontents-style refs; the second produces a final,
+            # ref-stable PDF).
+            async def _identity_revise(_log: str, tex: str) -> str:
+                return tex
+
+            result = await compile_mod.compile_with_revise(
+                tex=restored_tex,
+                workdir=slides_dir,
+                tex_name="deck.tex",
+                revise=_identity_revise,
+                max_retries=1,
+            )
+            compile_ok = result.ok
+            result_tex = result.tex
+            result_page_count = result.page_count
 
         # Bump current_version_id + page_count + status + pdf_path + updated_at
         # in one statement so a concurrent GET /deck sees the new state
         # atomically. A failed recompile is unexpected (the snapshot used to
         # build cleanly) but we still flip current_version_id so the chip on
         # screen matches the source — status=error surfaces the failure.
-        pdf_path = slides_dir / "deck.pdf"
-        new_pdf_path = str(pdf_path) if result.ok and pdf_path.exists() else None
+        new_pdf_path = str(pdf_path) if compile_ok and pdf_path.exists() else None
         await conn.execute(
             """
             UPDATE decks SET
@@ -486,9 +502,9 @@ async def restore_deck_version(
             """,
             (
                 version_id,
-                result.page_count if result.ok else 0,
+                result_page_count if compile_ok else 0,
                 new_pdf_path,
-                "ok" if result.ok else "error",
+                "ok" if compile_ok else "error",
                 session_id,
             ),
         )
@@ -501,11 +517,11 @@ async def restore_deck_version(
         # stringified slide_index ints (matching how sl_emit / the
         # in-place notes patch write them).
         fresh = await get_deck(conn, session_id=session_id)
-        if fresh is not None and result.ok:
+        if fresh is not None and compile_ok:
             await replace_deck_slides(
                 conn,
                 deck_id=fresh.id,
-                slides=build_deck_slides(result.tex, result.page_count),
+                slides=build_deck_slides(result_tex, result_page_count),
             )
             if bundled_notes:
                 for r in await get_deck_slides(conn, deck_id=fresh.id):
@@ -524,8 +540,9 @@ async def restore_deck_version(
     return {
         "ok": True,
         "current_version_id": version_id,
-        "page_count": result.page_count if result.ok else 0,
-        "status": "ok" if result.ok else "error",
+        "page_count": result_page_count if compile_ok else 0,
+        "status": "ok" if compile_ok else "error",
+        "cache_hit": pdf_from_cache,
     }
 
 

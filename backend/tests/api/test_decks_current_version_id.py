@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import aiosqlite
 import pytest
@@ -32,13 +33,19 @@ def _write_snapshot(
     tex: str = r"\documentclass{beamer}\begin{document}"
     r"\begin{frame}{X}y\end{frame}\end{document}",
     speaker_notes: dict[str, str] | None = None,
+    pdf_filename: str | None = None,
+    pdf_bytes: bytes | None = None,
 ) -> None:
-    payload = {
+    payload: dict[str, Any] = {
         "tex_content": tex,
         "speaker_notes": speaker_notes if speaker_notes is not None else {},
         "description": description,
         "timestamp": timestamp_iso,
     }
+    if pdf_filename is not None:
+        payload["pdf_filename"] = pdf_filename
+        if pdf_bytes is not None:
+            (edit_history / pdf_filename).write_bytes(pdf_bytes)
     (edit_history / f"{version_id}.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -202,3 +209,126 @@ async def test_restore_endpoint_updates_current_version_id(
         row = await cur.fetchone()
     assert row is not None
     assert row[0] == older_id
+
+
+@pytest.mark.asyncio
+async def test_restore_endpoint_uses_cached_pdf_when_available(
+    tmp_path: Path,
+    app_with_db: tuple[Any, aiosqlite.Connection],
+) -> None:
+    """F4.5 Task 16.2 hot path: snapshot has a cached PDF → restore skips the
+    recompile, copies the cache to deck.pdf, and reports cache_hit=true."""
+    app, conn = app_with_db
+    session_id = 1
+    slides_dir = tmp_path / "chat_session" / str(session_id) / "slides"
+    edit_history = slides_dir / "edit_history"
+    edit_history.mkdir(parents=True)
+    older_id = "version_20260601_120000_000000"
+    newer_id = "version_20260601_130000_000000"
+    cached_pdf_bytes = b"%PDF-1.4 cached pdf for v1\n"
+    _write_snapshot(
+        edit_history, older_id,
+        description="older",
+        timestamp_iso="2026-06-01T12:00:00",
+        pdf_filename=f"{older_id}.pdf",
+        pdf_bytes=cached_pdf_bytes,
+    )
+    _write_snapshot(
+        edit_history, newer_id,
+        description="active",
+        timestamp_iso="2026-06-01T13:00:00",
+    )
+    # Put a stale deck.pdf on disk so we can prove restore overwrites it.
+    (slides_dir / "deck.pdf").write_bytes(b"%PDF-1.4 stale\n")
+
+    await _seed_session(conn, session_id)
+    await _seed_deck(
+        conn,
+        session_id=session_id,
+        tex_path=slides_dir / "deck.tex",
+        current_version_id=newer_id,
+        page_count=1,
+    )
+
+    # Mock the recompile entrypoint so we can assert it was NOT called on the
+    # hot path. Patching the module the endpoint imports it through.
+    fake_compile = AsyncMock()
+    transport = ASGITransport(app=app)
+    with patch(
+        "paperhub.api.decks.compile_mod.compile_with_revise", fake_compile
+    ):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/sessions/{session_id}/deck/versions/{older_id}/restore",
+                headers={"X-Paperhub-Session-Id": str(session_id)},
+            )
+
+    assert resp.status_code in (200, 201), resp.text
+    body = resp.json()
+    assert body.get("cache_hit") is True
+    assert body.get("status") == "ok"
+    fake_compile.assert_not_called()
+    # The cached PDF bytes are now on disk as deck.pdf.
+    assert (slides_dir / "deck.pdf").read_bytes() == cached_pdf_bytes
+
+
+@pytest.mark.asyncio
+async def test_restore_endpoint_recompiles_when_legacy_snapshot(
+    tmp_path: Path,
+    app_with_db: tuple[Any, aiosqlite.Connection],
+) -> None:
+    """F4.5 Task 16.2 legacy path: snapshot without pdf_filename → existing
+    recompile flow runs unchanged, response carries cache_hit=false."""
+    app, conn = app_with_db
+    session_id = 1
+    slides_dir = tmp_path / "chat_session" / str(session_id) / "slides"
+    edit_history = slides_dir / "edit_history"
+    edit_history.mkdir(parents=True)
+    older_id = "version_20260601_120000_000000"
+    newer_id = "version_20260601_130000_000000"
+    _write_snapshot(
+        edit_history, older_id,
+        description="older legacy (no pdf_filename)",
+        timestamp_iso="2026-06-01T12:00:00",
+    )
+    _write_snapshot(
+        edit_history, newer_id,
+        description="active",
+        timestamp_iso="2026-06-01T13:00:00",
+    )
+
+    await _seed_session(conn, session_id)
+    await _seed_deck(
+        conn,
+        session_id=session_id,
+        tex_path=slides_dir / "deck.tex",
+        current_version_id=newer_id,
+        page_count=1,
+    )
+
+    # Fake the recompile so we don't need a real pdflatex; the endpoint reads
+    # ok / page_count / tex off the CompileResult.
+    from paperhub.pipelines.slide_pipeline.compile import CompileResult
+    fake_compile = AsyncMock(
+        return_value=CompileResult(
+            ok=True,
+            attempts=1,
+            tex=r"\documentclass{beamer}\begin{document}\end{document}",
+            log="",
+            page_count=1,
+        )
+    )
+    transport = ASGITransport(app=app)
+    with patch(
+        "paperhub.api.decks.compile_mod.compile_with_revise", fake_compile
+    ):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                f"/sessions/{session_id}/deck/versions/{older_id}/restore",
+                headers={"X-Paperhub-Session-Id": str(session_id)},
+            )
+
+    assert resp.status_code in (200, 201), resp.text
+    body = resp.json()
+    assert body.get("cache_hit") is False
+    fake_compile.assert_called_once()

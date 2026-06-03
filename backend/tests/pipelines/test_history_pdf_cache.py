@@ -38,7 +38,8 @@ def test_save_version_records_null_pdf_filename_when_pdf_missing(
 
 
 def test_restore_version_copies_cached_pdf_back(tmp_path: Path) -> None:
-    """When the snapshot has a cached PDF, restore_version copies it to deck.pdf."""
+    """When the snapshot has a cached PDF, restore_version copies it to deck.pdf
+    and returns (True, True) so the caller can skip recompiling."""
     (tmp_path / "deck.pdf").write_bytes(b"original pdf")
     history = VersionHistory(tmp_path)
     version_id = history.save_version("v1 tex", "first compile", {})
@@ -47,14 +48,16 @@ def test_restore_version_copies_cached_pdf_back(tmp_path: Path) -> None:
     (tmp_path / "deck.pdf").write_bytes(b"v2 pdf")
     history.save_version("v2 tex", "second compile", {})
     # Restoring v1 should bring the original bytes back.
-    ok = history.restore_version(f"{version_id}.json", str(tmp_path / "deck.tex"))
-    assert ok
+    result = history.restore_version(
+        f"{version_id}.json", str(tmp_path / "deck.tex")
+    )
+    assert result == (True, True)
     assert (tmp_path / "deck.pdf").read_bytes() == b"original pdf"
 
 
 def test_restore_version_skips_pdf_swap_when_legacy_snapshot(tmp_path: Path) -> None:
-    """A legacy snapshot without pdf_filename leaves deck.pdf alone; the caller
-    falls back to recompiling (this is just the helper's contract)."""
+    """A legacy snapshot without pdf_filename leaves deck.pdf alone and
+    returns (True, False) so the caller knows to fall back to recompile."""
     history = VersionHistory(tmp_path)
     # Hand-write a legacy snapshot (no pdf_filename field).
     eh = tmp_path / "edit_history"
@@ -71,6 +74,8 @@ def test_restore_version_skips_pdf_swap_when_legacy_snapshot(tmp_path: Path) -> 
         encoding="utf-8",
     )
     (tmp_path / "deck.pdf").write_bytes(b"current pdf")
-    ok = history.restore_version("version_legacy.json", str(tmp_path / "deck.tex"))
-    assert ok
+    result = history.restore_version(
+        "version_legacy.json", str(tmp_path / "deck.tex")
+    )
+    assert result == (True, False)
     assert (tmp_path / "deck.pdf").read_bytes() == b"current pdf"  # untouched
