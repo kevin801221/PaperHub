@@ -39,7 +39,12 @@ export function isSpeechSupported(): boolean {
 
 /** Create a recognizer, or null if the browser has no Web Speech API.
  *  Continuous (manual stop, not silence-gated); interim results stream so the
- *  composer fills live as you speak. */
+ *  composer fills live as you speak.
+ *
+ *  IMPORTANT: `onInterim` fires with the FULL accumulated transcript for the
+ *  current session on every result event — NOT a delta. Consumers must capture
+ *  a base string at start() time and REPLACE (base + transcript) on each call,
+ *  never append, or the text double-accumulates. */
 export function createSpeechRecognizer(
   handlers: Handlers,
 ): SpeechRecognizer | null {
