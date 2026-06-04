@@ -1,7 +1,9 @@
-import { KeyboardEvent, useEffect, useRef } from "react";
+import { KeyboardEvent, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   BookOpen,
   BrainCircuit,
+  Mic,
   Presentation,
   Columns2,
   Send,
@@ -17,6 +19,7 @@ import {
 import { AttachPaperMenu } from "@/components/chat/AttachPaperMenu";
 import { useChatStore } from "@/store/chat";
 import { useCanvasStore } from "@/store/canvas";
+import { createSpeechRecognizer, isSpeechSupported, type SpeechRecognizer } from "@/lib/speech";
 
 interface Props {
   onSubmit: (text: string) => void;
@@ -68,6 +71,33 @@ export function Composer({
   const toggleCanvasStore = useCanvasStore((s) => s.toggleCanvas);
   const canvasOpenStore = useCanvasStore((s) => s.open);
   const ref = useRef<HTMLTextAreaElement>(null);
+
+  const [listening, setListening] = useState(false);
+  const recognizerRef = useRef<SpeechRecognizer | null>(null);
+  const baseDraftRef = useRef("");
+  const speechSupported = isSpeechSupported();
+
+  const toggleVoice = () => {
+    if (listening) {
+      recognizerRef.current?.stop();
+      return;
+    }
+    baseDraftRef.current = value;
+    const rec = createSpeechRecognizer({
+      onInterim: (text) => {
+        const base = baseDraftRef.current;
+        flushSync(() => {
+          setValue(base && text ? `${base} ${text}` : base || text);
+        });
+      },
+      onEnd: () => setListening(false),
+      onError: () => setListening(false),
+    });
+    if (!rec) return;
+    recognizerRef.current = rec;
+    rec.start();
+    setListening(true);
+  };
 
   // If the parent provides a canvas toggle handler + open state, use those
   // (so ChatPage can enforce mutual exclusivity with Memory). Otherwise fall
@@ -133,6 +163,36 @@ export function Composer({
             <TooltipProvider>
               <div className="flex items-center gap-0.5">
                 <AttachPaperMenu />
+                {speechSupported && (
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={<span tabIndex={0} className="inline-flex" />}
+                    >
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={toggleVoice}
+                        aria-pressed={listening}
+                        className={
+                          listening
+                            ? "h-8 w-8 bg-accent text-foreground"
+                            : "h-8 w-8 text-muted-foreground hover:text-foreground"
+                        }
+                        aria-label="Voice input"
+                      >
+                        <Mic className="h-4 w-4" />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">
+                      <p>
+                        {listening
+                          ? "Listening — click to stop"
+                          : "Dictate your question (Web Speech)"}
+                      </p>
+                    </TooltipContent>
+                  </Tooltip>
+                )}
                 <Tooltip>
                   <TooltipTrigger
                     render={<span tabIndex={0} className="inline-flex" />}
