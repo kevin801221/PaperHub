@@ -52,4 +52,20 @@ describe("Composer voice input", () => {
       (screen.getByLabelText("Message") as HTMLTextAreaElement).value,
     ).toContain("find the limitations");
   });
+
+  it("stops dictation when the message is sent", () => {
+    (window as unknown as Record<string, unknown>).SpeechRecognition =
+      FakeRecognition;
+    render(<Composer onSubmit={() => {}} disabled={false} />);
+    fireEvent.click(screen.getByLabelText("Voice input")); // start listening
+    const instance = (
+      window as unknown as { __lastRecognition?: FakeRecognition }
+    ).__lastRecognition;
+    act(() => instance!.emit("send me now")); // fills the draft
+    fireEvent.click(screen.getByLabelText("Send")); // send while listening
+    expect(instance!.stop).toHaveBeenCalled();
+    expect(
+      screen.getByLabelText("Voice input").getAttribute("aria-pressed"),
+    ).toBe("false");
+  });
 });

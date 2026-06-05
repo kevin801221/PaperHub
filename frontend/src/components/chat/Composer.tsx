@@ -136,6 +136,13 @@ export function Composer({
   const submit = () => {
     const trimmed = value.trim();
     if (!trimmed || disabled) return;
+    // Stop dictation on send so a live recognizer doesn't keep writing partial
+    // transcripts into the just-cleared composer.
+    if (listening) {
+      recognizerRef.current?.stop();
+      recognizerRef.current = null;
+      setListening(false);
+    }
     onSubmit(trimmed);
     setDraft("");
     ref.current?.focus();
