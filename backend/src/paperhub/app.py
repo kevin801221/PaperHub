@@ -40,10 +40,8 @@ from paperhub.mcp import (
     mount_paperhub_papers_on,
 )
 from paperhub.mcp.config import ensure_config_seeded, resolve_config_path
-from paperhub.modelserver.spawn import ensure_running as _modelserver_ensure_running
 from paperhub.pipelines.marker_worker import build_worker_pipeline
 from paperhub.pipelines.marker_worker import run_worker as run_marker_worker
-from paperhub.rag.chroma import ChromaStore
 
 _LOG = logging.getLogger("paperhub.app")
 
@@ -79,28 +77,6 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         orphans = await sweep_orphan_session_folders(conn, settings.workspace_dir)
         if orphans:
             _LOG.info("swept %d orphan session folder(s)", orphans)
-    # ChromaStore holds a PersistentClient; chromadb manages its own cleanup.
-    app.state.chroma = ChromaStore(settings.chroma_dir)
-
-    # Model server: detach-and-leak. If an instance is already
-    # reachable on host:port, reuse it — this is what makes uvicorn
-    # --reload zero-cost: the previous worker's spawn outlives the
-    # reload, the new worker probes /health, sees green, skips spawn.
-    # If nothing is listening, spawn ONE detached subprocess (Windows
-    # CREATE_NEW_PROCESS_GROUP / Unix start_new_session) so a future
-    # worker restart won't take it down with us. We intentionally do
-    # NOT track this proc on app.state and do NOT terminate it at
-    # shutdown — that's what was killing the modelserver on every
-    # reload before. Operators who want explicit lifecycle use
-    # `scripts/start.ps1`; otherwise the modelserver leaks across
-    # backend restarts (cleaned up at OS reboot, or by manual
-    # taskkill / pkill paperhub-modelserver). Skipped entirely when
-    # PAPERHUB_INPROCESS_MODELS=1.
-    if not settings.inprocess_models:
-        await _modelserver_ensure_running(
-            host=settings.model_server_host,
-            port=settings.model_server_port,
-        )
 
     # MCP registry: load mcp_servers.toml + construct (NOT connect) clients.
     # Connection is lazy on first tool use so this never blocks startup —
@@ -111,18 +87,15 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.mcp_registry = MCPRegistry()
     await app.state.mcp_registry.startup(mcp_toml)
 
-    # Pre-warm embedder + reranker as a FIRE-AND-FORGET background task
-    # The modelserver's first /embed call triggers SentenceTransformer load
-    # (HF Hub download on cold cache — minutes on a slow network); the
-    # pre-warm that used to happen here was removed when the dead
-    # Retriever/Reranker query path was deleted. The stack announces
-    # ready as soon as the rest of boot completes.
+    # The dense-vector RAG stack (embedder + reranker + Chroma) was removed;
+    # there is no model pre-warm here. The stack announces ready as soon as
+    # the rest of boot completes.
     _print_boot_banner(settings, app)
 
     # Background Marker upgrade worker (Plan F2.1): drains PDF papers marked
     # 'marker_pending' by re-extracting them via Marker (one at a time — a
     # concurrent Marker call OOMs a small GPU), upgrading the on-disk
-    # PaperAsset, and re-chunking + re-embedding. Durable: the queue lives in
+    # PaperAsset, and re-chunking. Durable: the queue lives in
     # the DB, so pending papers resume across restarts. Runs on a DEDICATED
     # long-lived connection (the migration conn above is closed). Disabled with
     # PAPERHUB_MARKER_WORKER=0 (tests set this so they never spawn it).
@@ -132,9 +105,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     if os.environ.get("PAPERHUB_MARKER_WORKER", "1") != "0":
         worker_conn = await aiosqlite.connect(settings.db_path)
         await configure_connection(worker_conn)
-        worker_pipeline = build_worker_pipeline(
-            worker_conn, settings, chroma=app.state.chroma,
-        )
+        worker_pipeline = build_worker_pipeline(worker_conn, settings)
         stop = asyncio.Event()
         app.state.marker_worker_conn = worker_conn
         app.state.marker_worker_stop = stop
@@ -166,15 +137,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         if worker_conn is not None:
             with contextlib.suppress(Exception):
                 await worker_conn.close()
-        # Lifespan: chroma cleanup handled internally by chromadb.
         await app.state.mcp_registry.shutdown()
 
 
 # PaperHub wordmark (figlet "slant"). A clear, iconic "we're up" marker so the
 # transient connection errors the UI logs while polling a not-yet-listening
 # backend aren't mistaken for a failed boot — printed once the whole stack
-# (DB, vectors, model server, MCP) is wired AND model warm-up has resolved,
-# since warm-up can finish last.
+# (DB, MCP) is wired.
 _BANNER_ART = [
     r"    ____                        __  __      __  ",
     r"   / __ \____ _____  ___  _____/ / / /_  __/ /_ ",
@@ -185,7 +154,7 @@ _BANNER_ART = [
 ]
 
 
-def _print_boot_banner(settings: object, app: FastAPI) -> None:
+def _print_boot_banner(_settings: object, app: FastAPI) -> None:
     """Print an iconic 'boot complete' banner to stdout once the full stack is
     wired. Skipped under tests / when ``PAPERHUB_BOOT_BANNER=0``."""
     if os.environ.get("PAPERHUB_BOOT_BANNER", "1") == "0":
@@ -217,12 +186,6 @@ def _print_boot_banner(settings: object, app: FastAPI) -> None:
     except Exception:  # noqa: BLE001
         ver = ""
 
-    s = settings  # has model_server_*, inprocess_models, db_path
-    model = (
-        "in-process"
-        if getattr(s, "inprocess_models", False)
-        else f"{getattr(s, 'model_server_host', '?')}:{getattr(s, 'model_server_port', '?')}"
-    )
     mcp_names = sorted(getattr(app.state.mcp_registry, "_clients", {}) or {})
     mcp = ", ".join(mcp_names) if mcp_names else "none (web search optional)"
 
@@ -232,7 +195,6 @@ def _print_boot_banner(settings: object, app: FastAPI) -> None:
         f"{'PaperHub ready':<16}{ver}",
         "",
         f"{'Open the app':<16}http://localhost:5173",
-        f"{'Model server':<16}{model}",
         f"{'MCP servers':<16}{mcp}",
         "",
         "Connection errors logged above were the UI polling before",

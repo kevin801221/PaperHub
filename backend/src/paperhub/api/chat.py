@@ -36,7 +36,6 @@ from paperhub.agents.style_commands import (
     classify_style_command,
     handle_style_command,
 )
-from paperhub.api.deps import get_chroma
 from paperhub.config import Settings, load_settings
 from paperhub.db.connection import open_db
 from paperhub.db.tool_calls import drain_tool_calls_since
@@ -591,7 +590,6 @@ async def chat_endpoint(req: ChatRequest, request: Request) -> EventSourceRespon
                     pipeline = PaperPipeline(
                         conn,
                         papers_cache_dir=settings.papers_cache_dir,
-                        chroma=get_chroma(request, settings),
                     )
                     mcp_registry: MCPRegistry = request.app.state.mcp_registry
                     final_content = ""
