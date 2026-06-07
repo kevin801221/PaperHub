@@ -85,3 +85,46 @@ def _find_table_envs(tex: str) -> list[tuple[int, int, str]]:
         envs.append((m.start(), end, name))
         i = end  # skip the whole env so nested children aren't double-counted
     return envs
+
+
+# Sentinel token injected at ingest (pipelines/sentinels.py). It is plain text
+# that breaks pdflatex, so strip it from a snippet before compiling. The cited
+# chunk then falls back to section-scroll in the Canvas (accepted tradeoff).
+_SENTINEL_RE = re.compile(r"PHCHUNKANCHOR\d+END")
+
+# Strip the paper's own \documentclass — our standalone class replaces it.
+_DOCUMENTCLASS_RE = re.compile(r"\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*")
+# Colours defined inline in the body before the table (\cellcolor/\rowcolor).
+_DEFINECOLOR_RE = re.compile(r"\\definecolor\{[^}]+\}\{[^}]+\}\{[^}]+\}")
+
+# Packages a complex table tends to want. \setlength{\textwidth}{18cm} gives
+# tabular*{\textwidth}{...\extracolsep{\fill}...} a concrete width to fill;
+# the standalone class then crops the page to the actual table content.
+_TABLE_BEDROCK_PREAMBLE = r"""\documentclass[border=10pt]{standalone}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{makecell}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{xcolor}
+\usepackage{colortbl}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\setlength{\textwidth}{18cm}
+"""
+
+
+def _build_snippet(env_text: str, *, preamble: str, body_prefix: str) -> str:
+    """Assemble a compilable standalone document for one table environment."""
+    env_clean = _SENTINEL_RE.sub("", env_text)
+    parts: list[str] = [_DOCUMENTCLASS_RE.sub("", preamble)]
+    for m in _DEFINECOLOR_RE.finditer(body_prefix):
+        parts.append(m.group(0))
+    context = "\n".join(p for p in parts if p)
+    return (
+        _TABLE_BEDROCK_PREAMBLE
+        + context
+        + "\n\\begin{document}\n"
+        + env_clean
+        + "\n\\end{document}\n"
+    )

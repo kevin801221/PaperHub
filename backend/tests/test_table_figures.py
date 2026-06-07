@@ -58,3 +58,31 @@ def test_two_sibling_tables_yield_two_envs() -> None:
 def test_unclosed_env_is_skipped() -> None:
     tex = "\\begin{tabular}{cc}a & b oops no end"
     assert _find_table_envs(tex) == []
+
+
+from paperhub.pipelines.table_figures import _build_snippet
+
+
+def test_snippet_has_bedrock_textwidth_and_document() -> None:
+    snip = _build_snippet("\\begin{tabular}{c}a\\\\\\end{tabular}", preamble="", body_prefix="")
+    assert "\\documentclass[border=10pt]{standalone}" in snip
+    assert "\\usepackage{booktabs}" in snip
+    assert "\\setlength{\\textwidth}{18cm}" in snip
+    assert "\\begin{document}" in snip and "\\end{document}" in snip
+    assert "\\begin{tabular}{c}a" in snip
+
+
+def test_snippet_strips_sentinels() -> None:
+    env = "\\begin{tabular}{c}aPHCHUNKANCHOR12END & b\\\\\\end{tabular}"
+    snip = _build_snippet(env, preamble="", body_prefix="")
+    assert "PHCHUNKANCHOR" not in snip
+
+
+def test_snippet_drops_paper_documentclass_but_keeps_definecolor() -> None:
+    preamble = "\\documentclass[11pt]{article}\n\\newcommand{\\dmodel}{d}"
+    body_prefix = "intro \\definecolor{hl}{RGB}{0,119,255} more"
+    snip = _build_snippet("\\begin{tabular}{c}\\dmodel\\\\\\end{tabular}",
+                          preamble=preamble, body_prefix=body_prefix)
+    assert "\\documentclass[11pt]{article}" not in snip   # paper's class removed
+    assert "\\newcommand{\\dmodel}{d}" in snip            # author macro kept
+    assert "\\definecolor{hl}{RGB}{0,119,255}" in snip    # body-prefix colour kept
