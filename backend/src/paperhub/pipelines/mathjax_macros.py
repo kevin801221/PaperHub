@@ -190,15 +190,35 @@ def extract_macros_from_dir(source_dir: Path, preamble: str = "") -> dict[str, M
     collision (it's the author's final say), then ``.sty``/``.cls`` in sorted
     order. Only top-level bundled files are scanned — system packages aren't in
     the tarball, so this stays scoped to the paper's own definitions.
+
+    Class/style files are mostly LAYOUT machinery, not math. Two filters keep
+    that junk out of the math config: (1) skip any definition whose body uses an
+    ``@``-internal command (e.g. ``\\footnotesize`` → ``\\@setfontsize...``) —
+    these break MathJax; (2) never let a bundled file override a CURATED macro
+    (a class redefining ``\\footnotesize`` as a font-size switch must not clobber
+    our safe no-op). Definitions from the main ``.tex`` preamble are trusted as
+    the author's math macros and skip both filters.
     """
     out: dict[str, MacroValue] = {}
     for path in sorted([*source_dir.glob("*.cls"), *source_dir.glob("*.sty")]):
         try:
-            out.update(extract_macros(path.read_text(encoding="utf-8", errors="ignore")))
+            parsed = extract_macros(path.read_text(encoding="utf-8", errors="ignore"))
         except OSError:
             continue
+        for name, body in parsed.items():
+            if name in CURATED_MACROS or _body_has_internal(body):
+                continue  # layout machinery / would clobber a curated safe def
+            out[name] = body
     out.update(extract_macros(preamble))  # main preamble overrides bundled files
     return out
+
+
+def _body_has_internal(body: MacroValue) -> bool:
+    """True if a macro body references an ``@``-internal command — the signature
+    of LaTeX class/style layout machinery (``\\@setfontsize``, ``\\@ixpt``, …),
+    which is never valid MathJax math and would surface as a render error."""
+    text = body if isinstance(body, str) else (str(body[0]) if body else "")
+    return "@" in text
 
 
 def build_mathjax_config_script(extra: dict[str, MacroValue] | None = None) -> str:

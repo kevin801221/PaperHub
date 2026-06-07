@@ -111,6 +111,30 @@ class TestBuildScript:
         # Main preamble overrides a bundled-file definition of the same name.
         assert macros["shared"] == "FROM_PREAMBLE"
 
+    def test_bundled_files_dont_clobber_curated_or_pull_layout(
+        self, tmp_path: Path
+    ) -> None:
+        """A class file's layout redefinitions must NOT reach the math config:
+        neurips_2024.sty defines \\footnotesize as \\@setfontsize... — it must
+        not override the curated \\footnotesize no-op, and @-internal bodies are
+        dropped entirely. Real math macros (no @) still come through."""
+        (tmp_path / "conf.sty").write_text(
+            "\\def\\footnotesize{\\@setfontsize\\footnotesize\\@ixpt\\@xpt}\n"
+            "\\def\\headerbox{\\@tempboxa}\n"   # @-internal layout → dropped
+            "\\def\\gD{{\\mathcal{D}}}\n",       # real math macro → kept
+            encoding="utf-8",
+        )
+        macros = extract_macros_from_dir(tmp_path)
+        assert "footnotesize" not in macros  # curated no-op preserved downstream
+        assert "headerbox" not in macros      # @-internal body dropped
+        assert macros["gD"] == r"{\mathcal{D}}"
+        # And the build still emits the curated no-op for \footnotesize.
+        script = build_mathjax_config_script(macros)
+        cfg = json.loads(
+            script[script.index("{tex:") + len("{tex:{macros:"):script.index("}};</script>")]
+        )
+        assert cfg["footnotesize"] == ""
+
     def test_extract_macros_from_dir_no_packages_is_just_preamble(
         self, tmp_path: Path
     ) -> None:
