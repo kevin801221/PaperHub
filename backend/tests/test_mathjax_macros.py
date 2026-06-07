@@ -87,6 +87,17 @@ class TestBuildScript:
         # Curated mappings are present.
         assert any("mathbbm" in k for k in CURATED_MACROS)
 
+    def test_font_size_switches_are_noop_macros(self) -> None:
+        """\\footnotesize etc. aren't in MathJax's default build; they must be
+        defined as no-ops so formula annotations like
+        \\text{\\footnotesize $\\because …$} render instead of erroring."""
+        script = build_mathjax_config_script()
+        start = script.index("{tex:") + len("{tex:{macros:")
+        end = script.index("}};</script>")
+        macros = json.loads(script[start:end])
+        for size in ("footnotesize", "small", "scriptsize", "tiny", "Large"):
+            assert macros.get(size) == "", f"{size} must map to a no-op"
+
     def test_merges_and_overrides_with_extracted(self) -> None:
         script = build_mathjax_config_script({"Ls": r"\mathcal{L}"})
         # Extract the JSON object from `window.MathJax={tex:{macros:<JSON>}};`.

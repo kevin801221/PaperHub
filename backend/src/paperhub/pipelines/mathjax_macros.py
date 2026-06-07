@@ -33,6 +33,23 @@ CURATED_MACROS: dict[str, MacroValue] = {
     "bm": [r"\boldsymbol{#1}", 1],
     # isomath — slanted sans; closest native fallback.
     "mathsfit": [r"\mathit{#1}", 1],
+    # LaTeX font-size switches are NOT in MathJax's default build (they live in
+    # the unshipped `textmacros` extension), so a paper that de-emphasises a
+    # formula annotation with `\text{\footnotesize $\because …$}`
+    # (arXiv:2406.07524) hit "Undefined control sequence \footnotesize" and the
+    # annotation rendered broken. Map each to a no-op so the content renders (at
+    # default size) instead of erroring. KaTeX (the chat) supports these
+    # natively, so this only affects the MathJax Citation-Canvas path.
+    "tiny": "",
+    "scriptsize": "",
+    "footnotesize": "",
+    "small": "",
+    "normalsize": "",
+    "large": "",
+    "Large": "",
+    "LARGE": "",
+    "huge": "",
+    "Huge": "",
 }
 
 # Unescaped `%` starts a LaTeX comment to end-of-line; `\%` is a literal.
