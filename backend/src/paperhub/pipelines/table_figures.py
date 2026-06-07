@@ -18,6 +18,12 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+import pymupdf
 
 logger = logging.getLogger(__name__)
 
@@ -128,3 +134,63 @@ def _build_snippet(env_text: str, *, preamble: str, body_prefix: str) -> str:
         + env_clean
         + "\n\\end{document}\n"
     )
+
+
+_PDFLATEX_TIMEOUT_SECONDS = 60
+
+
+def _compile_table_to_png(
+    env_text: str,
+    *,
+    preamble: str,
+    body_prefix: str,
+    png_path: Path,
+    dpi: int,
+) -> bool:
+    """Compile one table env to ``png_path``. Return True on success.
+
+    pdflatex runs in an isolated temp dir; the PNG is written via pymupdf at
+    ``dpi``. Any failure (timeout, pdflatex absent, no PDF, rasterise error) is
+    logged and returned as False so the caller leaves the original env in place.
+    """
+    standalone_tex = _build_snippet(env_text, preamble=preamble, body_prefix=body_prefix)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmpdir = Path(tmp)
+        (tmpdir / "tbl.tex").write_text(standalone_tex, encoding="utf-8")
+        try:
+            proc = subprocess.run(
+                ["pdflatex", "-interaction=nonstopmode", "tbl.tex"],
+                cwd=str(tmpdir),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_PDFLATEX_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning(
+                "table: pdflatex timed out (%ss); leaving env as-is",
+                _PDFLATEX_TIMEOUT_SECONDS,
+            )
+            return False
+        except FileNotFoundError:
+            logger.debug("table: pdflatex not on PATH; leaving env as-is")
+            return False
+        pdf_path = tmpdir / "tbl.pdf"
+        if not pdf_path.is_file():
+            logger.warning(
+                "table: pdflatex produced no PDF (rc=%s). Log tail: %s",
+                proc.returncode,
+                (proc.stdout or "")[-500:],
+            )
+            return False
+        # rc!=0 with a PDF present is a harmless warning (e.g. overfull hbox);
+        # the table rendered, so use it.
+        try:
+            with pymupdf.open(pdf_path) as doc:  # type: ignore[no-untyped-call]
+                doc.load_page(0).get_pixmap(dpi=dpi).save(str(png_path))
+        except Exception as exc:  # noqa: BLE001 — pymupdf raises bare exceptions
+            logger.warning("table: rasterise failed: %s", exc)
+            return False
+    return True

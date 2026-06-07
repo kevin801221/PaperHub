@@ -86,3 +86,39 @@ def test_snippet_drops_paper_documentclass_but_keeps_definecolor() -> None:
     assert "\\documentclass[11pt]{article}" not in snip   # paper's class removed
     assert "\\newcommand{\\dmodel}{d}" in snip            # author macro kept
     assert "\\definecolor{hl}{RGB}{0,119,255}" in snip    # body-prefix colour kept
+
+
+import shutil
+from pathlib import Path
+
+import pytest
+
+from paperhub.pipelines.table_figures import _compile_table_to_png
+
+
+@pytest.mark.skipif(shutil.which("pdflatex") is None, reason="pdflatex not installed")
+def test_compile_simple_table_produces_png(tmp_path: Path) -> None:
+    png = tmp_path / "t.png"
+    ok = _compile_table_to_png(
+        "\\begin{tabular}{cc}\\toprule a & b\\\\ \\midrule 1 & 2\\\\ \\bottomrule\\end{tabular}",
+        preamble="",
+        body_prefix="",
+        png_path=png,
+        dpi=150,
+    )
+    assert ok is True
+    assert png.is_file() and png.stat().st_size > 0
+
+
+def test_compile_returns_false_when_pdflatex_missing(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("paperhub.pipelines.table_figures.shutil.which", lambda _: None)
+    # No pdflatex on PATH -> FileNotFoundError inside subprocess -> graceful False.
+    monkeypatch.setattr(
+        "paperhub.pipelines.table_figures.subprocess.run",
+        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()),
+    )
+    ok = _compile_table_to_png(
+        "\\begin{tabular}{c}a\\\\\\end{tabular}",
+        preamble="", body_prefix="", png_path=tmp_path / "x.png", dpi=150,
+    )
+    assert ok is False
