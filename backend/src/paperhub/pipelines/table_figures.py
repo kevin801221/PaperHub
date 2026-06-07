@@ -107,7 +107,14 @@ _DEFINECOLOR_RE = re.compile(r"\\definecolor\{[^}]+\}\{[^}]+\}\{[^}]+\}")
 # Packages a complex table tends to want. \setlength{\textwidth}{18cm} gives
 # tabular*{\textwidth}{...\extracolsep{\fill}...} a concrete width to fill;
 # the standalone class then crops the page to the actual table content.
-_TABLE_BEDROCK_PREAMBLE = r"""\documentclass[border=10pt]{standalone}
+#
+# Border is asymmetric — {left bottom right top} = {34pt 10pt 10pt 10pt}. A
+# tabular* fixed to \textwidth sits flush against the page's left edge (the
+# leading @{} colspec drops the left tabcolsep), so a symmetric border clips
+# the first column on the left while the unused fill-slack pools on the right
+# (arXiv:2602.20200). The extra ~24pt left margin re-centres the table and
+# stops the clip; measured left/right margins land at ~84/98px @300dpi.
+_TABLE_BEDROCK_PREAMBLE = r"""\documentclass[border={34pt 10pt 10pt 10pt}]{standalone}
 \usepackage{booktabs}
 \usepackage{multirow}
 \usepackage{makecell}

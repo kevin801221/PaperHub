@@ -138,7 +138,7 @@ def test_unclosed_env_is_skipped() -> None:
 
 def test_snippet_has_bedrock_textwidth_and_document() -> None:
     snip = _build_snippet("\\begin{tabular}{c}a\\\\\\end{tabular}", preamble="", body_prefix="")
-    assert "\\documentclass[border=10pt]{standalone}" in snip
+    assert "\\documentclass[border={34pt 10pt 10pt 10pt}]{standalone}" in snip
     assert "\\usepackage{booktabs}" in snip
     assert "\\setlength{\\textwidth}{18cm}" in snip
     assert "\\begin{document}" in snip and "\\end{document}" in snip
