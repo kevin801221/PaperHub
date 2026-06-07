@@ -6,11 +6,33 @@ import pytest
 from paperhub.pipelines.table_figures import (
     _build_snippet,
     _compile_table_to_png,
+    _convert_rasterized_table_floats,
     _find_table_envs,
     _is_hostile,
     _unwrap_fitting_boxes,
     rasterize_complex_tables,
 )
+
+
+def test_rasterized_table_float_becomes_figure() -> None:
+    # A table* float whose tabular is now our image must become a figure float
+    # (pandoc drops a table float's caption + left-aligns it otherwise).
+    tex = (
+        "\\begin{table*}[h]\\centering\\caption{Perf comparison}\\label{t}\n"
+        "\\includegraphics{table-fig-001.png}\n"
+        "\\end{table*}"
+    )
+    out = _convert_rasterized_table_floats(tex)
+    assert "\\begin{figure}[h]" in out
+    assert "\\end{figure}" in out
+    assert "\\begin{table*}" not in out and "\\end{table*}" not in out
+    assert "\\caption{Perf comparison}" in out  # caption preserved
+
+
+def test_non_rasterized_table_float_left_alone() -> None:
+    # A real table (no rasterized image) stays a table for pandoc to render.
+    tex = "\\begin{table}\\caption{c}\\begin{tabular}{cc}a & b\\\\\\end{tabular}\\end{table}"
+    assert _convert_rasterized_table_floats(tex) == tex
 
 
 def test_unwrap_resizebox_around_table_image() -> None:

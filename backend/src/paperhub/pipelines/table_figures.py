@@ -248,7 +248,47 @@ def rasterize_complex_tables(
         parts.append(f"\\includegraphics{{{png_name}}}" if ok else tex[start:end])
         last_end = end
     parts.append(tex[last_end:])
-    return _unwrap_fitting_boxes("".join(parts))
+    return _convert_rasterized_table_floats(_unwrap_fitting_boxes("".join(parts)))
+
+
+_FLOAT_BEGIN_RE = re.compile(r"\\begin\{(table\*|table)\}")
+
+
+def _convert_rasterized_table_floats(tex: str) -> str:
+    r"""Rename a ``table``/``table*`` float to ``figure`` when it now contains a
+    rasterised table image.
+
+    A table float whose ``tabular`` was replaced by an image renders, under
+    pandoc, as a plain left-aligned ``<div class="table*">`` AND its
+    ``\caption`` is silently dropped (pandoc only keeps a table caption when a
+    real table body survives). Renaming the float to ``figure`` makes pandoc
+    emit a centred, captioned ``<figure><img><figcaption>`` — consistent with
+    real figures. Only floats containing our ``table-fig-`` image are touched;
+    floats with a surviving real ``tabular`` are left for pandoc to render.
+    """
+    out: list[str] = []
+    i = 0
+    while True:
+        m = _FLOAT_BEGIN_RE.search(tex, i)
+        if m is None:
+            out.append(tex[i:])
+            break
+        name = m.group(1)
+        end = _matching_end(tex, name, m.end())
+        if end == -1:
+            out.append(tex[i:m.end()])
+            i = m.end()
+            continue
+        out.append(tex[i:m.start()])
+        block = tex[m.start():end]
+        if "\\includegraphics{table-fig-" in block:
+            begin_tok, end_tok = "\\begin{" + name + "}", "\\end{" + name + "}"
+            block = "\\begin{figure}" + block[len(begin_tok):]
+            if block.endswith(end_tok):
+                block = block[: -len(end_tok)] + "\\end{figure}"
+        out.append(block)
+        i = end
+    return "".join(out)
 
 
 # Width-fitting wrappers (\resizebox{W}{H}{…}, \scalebox{f}{…},
