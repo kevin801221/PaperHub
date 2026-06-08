@@ -67,10 +67,16 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     litellm.num_retries = 3
 
     settings = load_settings()
-    app.state.settings = settings
     async with open_db(settings.db_path) as conn:
         await apply_schema(conn)
         await apply_settings_overlay_at_boot(conn)
+        # Re-read settings AFTER the overlay so restart_required vars
+        # (PAPERHUB_LOG_LEVEL, PAPERHUB_MARKER_URL, PAPERHUB_INPROCESS_MARKER,
+        # ...) reflect the DB-persisted values. Safe: db_path/workspace_dir
+        # derive from PAPERHUB_WORKSPACE, which is read_only and can never be
+        # in the overlay, so the already-open `conn` stays valid + consistent.
+        settings = load_settings()
+        app.state.settings = settings
         # Reclaim storage from chats soft-deleted longer ago than the
         # retention window (their messages/runs/papers cascade away, and
         # their workspace/chat_session/<id>/ folder is rmtree'd).
