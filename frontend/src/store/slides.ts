@@ -25,6 +25,13 @@ interface SlidesState {
    *  ``busy`` prop masks during an edit. */
   restoringBySession: Record<number, boolean>;
   currentPageBySession: Record<number, number>;
+  /** Per-session "attach the on-screen slide as chat context" toggle (the
+   *  composer chip's eye). Sticky per session: persists across slide changes;
+   *  the attached CONTENT tracks the active slide via currentPageBySession.
+   *  Undefined → attached (auto-on when a deck is open). Ephemeral (not
+   *  persisted), like deck data. */
+  slideAttachedBySession: Record<number, boolean>;
+  setSlideAttached: (sid: number, attached: boolean) => void;
   /** Per-session "presentation mode active" flag. Ephemeral (NOT persisted) and
    *  kept in the store — never in SlidesPanel local state — so the Q&A
    *  close/reopen (a panel unmount/remount) does not lose it. */
@@ -60,6 +67,7 @@ export const useSlidesStore = create<SlidesState>()(
       deckRevisionBySession: {},
       restoringBySession: {},
       currentPageBySession: {},
+      slideAttachedBySession: {},
       presentingBySession: {},
       presentStartedAtBySession: {},
       filmstripWidth: FILMSTRIP_DEFAULT_WIDTH,
@@ -82,6 +90,10 @@ export const useSlidesStore = create<SlidesState>()(
       setCurrentPage: (sid, page) =>
         set((s) => ({
           currentPageBySession: { ...s.currentPageBySession, [sid]: page },
+        })),
+      setSlideAttached: (sid, attached) =>
+        set((s) => ({
+          slideAttachedBySession: { ...s.slideAttachedBySession, [sid]: attached },
         })),
       setRestoring: (sid, restoring) =>
         set((s) => ({
