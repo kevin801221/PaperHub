@@ -207,26 +207,36 @@ async def _copy_deck(
     new_tex = str(dst_slides / "deck.tex")
     new_pdf = str(dst_slides / "deck.pdf") if deck[3] else None
 
-    async with write_transaction(conn):
-        await conn.execute(
-            "INSERT INTO decks (session_id, run_id, tex_path, pdf_path, "
-            "speaker_notes_json, plan_json, page_count, current_version_id, "
-            "contributing_paper_ids_json, status) "
-            "VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (new_session_id, new_tex, new_pdf, deck[4], deck[5], deck[6], deck[7],
-             deck[8], deck[9]),
-        )
-        async with conn.execute(
-            "SELECT id FROM decks WHERE session_id = ?", (new_session_id,)
-        ) as cur:
-            deck_row = await cur.fetchone()
-        assert deck_row is not None
-        new_deck_id = int(deck_row[0])
+    try:
+        async with write_transaction(conn):
+            await conn.execute(
+                "INSERT INTO decks (session_id, run_id, tex_path, pdf_path, "
+                "speaker_notes_json, plan_json, page_count, current_version_id, "
+                "contributing_paper_ids_json, status) "
+                "VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_session_id, new_tex, new_pdf, deck[4], deck[5], deck[6], deck[7],
+                 deck[8], deck[9]),
+            )
+            async with conn.execute(
+                "SELECT id FROM decks WHERE session_id = ?", (new_session_id,)
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None:
+                raise RuntimeError(
+                    f"_copy_deck: decks row missing after INSERT for session {new_session_id}"
+                )
+            new_deck_id = int(row[0])
 
-        await conn.execute(
-            "INSERT INTO deck_slides (deck_id, slide_index, frame_tex, note_text, "
-            "note_language, page_start, page_end) "
-            "SELECT ?, slide_index, frame_tex, note_text, note_language, "
-            "page_start, page_end FROM deck_slides WHERE deck_id = ?",
-            (new_deck_id, deck[0]),
+            await conn.execute(
+                "INSERT INTO deck_slides (deck_id, slide_index, frame_tex, note_text, "
+                "note_language, page_start, page_end) "
+                "SELECT ?, slide_index, frame_tex, note_text, note_language, "
+                "page_start, page_end FROM deck_slides WHERE deck_id = ?",
+                (new_deck_id, deck[0]),
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort; a deck failure must not abort the fork
+        _LOG.warning(
+            "fork: deck-row copy failed (%r); fork %s left deckless",
+            exc, new_session_id,
         )
+        return
