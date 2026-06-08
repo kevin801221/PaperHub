@@ -3,7 +3,7 @@ import type { Components, ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
-import { Copy, RotateCcw } from "lucide-react";
+import { Copy, History, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 
 // KaTeX stylesheet — required for rehype-katex output to render correctly.
@@ -174,11 +174,12 @@ export function MessageBubble({
         )}
 
         {/* Fork (rewind & resend) — hover-revealed at the top-right corner of
-            the user's own message bubble. RotateCcw signals "rewind to here"
-            (Claude-Code idiom), NOT a pencil (which would imply destructive
-            in-place editing). Circular outlined button floating over the corner.
-            z-10 keeps it above adjacent bubbles; bg-background makes the circle
-            opaque over the bubble fill. */}
+            the user's own message bubble. The History (clock-rewind) icon
+            signals "roll back to this point" (Claude-Code checkpoint idiom),
+            distinct from the Retry button's RotateCcw refresh loop and from a
+            pencil (which would imply destructive in-place editing). Circular
+            theme-aware button floating over the corner; z-10 keeps it above
+            adjacent bubbles. */}
         {showFork && (
           <div className="opacity-0 group-hover/bubble:opacity-100 focus-within:opacity-100 transition-opacity absolute -top-3 -right-2 z-10">
             <Button
@@ -190,7 +191,7 @@ export function MessageBubble({
               title="Fork from here — branch a new chat and edit this message"
               onClick={onFork}
             >
-              <RotateCcw className="h-3.5 w-3.5" />
+              <History className="h-3.5 w-3.5" />
             </Button>
           </div>
         )}
