@@ -65,3 +65,22 @@ def test_credential_allowlist() -> None:
     assert is_allowed_credential_key("SOME_NEW_PROVIDER_API_KEY")  # suffix match
     assert not is_allowed_credential_key("PATH")
     assert not is_allowed_credential_key("HOME")
+
+
+def test_read_only_field_rejects_any_value() -> None:
+    field = field_by_key("PAPERHUB_WORKSPACE")
+    assert field is not None and field.read_only is True
+    with pytest.raises(ValueError):
+        coerce_value(field, "./other")
+
+
+def test_string_field_rejects_empty() -> None:
+    field = field_by_key("PAPERHUB_MODEL_SMALL")
+    assert field is not None
+    with pytest.raises(ValueError):
+        coerce_value(field, "   ")
+
+
+def test_paperhub_prefixed_keys_are_not_credentials() -> None:
+    assert not is_allowed_credential_key("PAPERHUB_SECRET_KEY")
+    assert not is_allowed_credential_key("PAPERHUB_API_KEY")

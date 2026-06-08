@@ -63,7 +63,7 @@ PROVIDER_CREDENTIAL_SUGGESTIONS: tuple[str, ...] = (
 # the credential-shaped suffix pattern. This blocks arbitrary env injection
 # (PATH, HOME, …) while letting any real provider env var through.
 _CREDENTIAL_SUFFIX_RE = re.compile(
-    r"^[A-Z][A-Z0-9_]*_(API_KEY|API_BASE|API_VERSION|KEY|TOKEN|REGION|PROJECT|LOCATION)$"
+    r"^(?!PAPERHUB_)[A-Z][A-Z0-9_]*_(API_KEY|API_BASE|API_VERSION|KEY|TOKEN|REGION|PROJECT|LOCATION)$"
 )
 
 
@@ -160,7 +160,7 @@ def coerce_value(field: SettingField, raw: str) -> str:
         raise ValueError(f"{field.key} must be a boolean (0/1).")
     if field.type == "enum":
         if value not in field.choices:
-            raise ValueError(f"{field.key} must be one of {field.choices}.")
+            raise ValueError(f"{field.key} must be one of: {', '.join(field.choices)}.")
         return value
     if field.type == "email":
         if not _EMAIL_RE.match(value):
