@@ -55,13 +55,18 @@ export function useChatStream() {
     // screen so the Report Agent's deck-command classifier can resolve
     // "edit this slide" to the visible page, and whether the slide is
     // attached as context for the QA agent.
+    // currentViewPage is gated on hasDeck only (deck edits need it even when
+    // the panel is closed); slideAttached additionally requires slides.open so
+    // slide context is never appended when the Slides panel is not visible.
     const slides = useSlidesStore.getState();
     const hasDeck =
       backendSessionId !== null && !!slides.deckBySession[backendSessionId];
     const currentViewPage =
       hasDeck ? (slides.currentPageBySession[backendSessionId] ?? 1) : undefined;
     const slideAttached =
-      hasDeck ? (slides.slideAttachedBySession[backendSessionId] ?? true) : false;
+      hasDeck && slides.open
+        ? (slides.slideAttachedBySession[backendSessionId] ?? true)
+        : false;
 
     try {
       await streamChat(

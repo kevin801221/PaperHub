@@ -114,7 +114,7 @@ describe("useChatStream current_view_page threading", () => {
     expect("current_view_page" in captured.body!).toBe(false);
   });
 
-  it("sends slide_attached=true (default) when a deck is open and attach is unset", async () => {
+  it("sends slide_attached=true (default) when a deck is open, panel is open, and attach is unset", async () => {
     const captured: { body?: Record<string, unknown> } = {};
     server.resetHandlers(captureBodyHandler(captured));
 
@@ -123,6 +123,8 @@ describe("useChatStream current_view_page threading", () => {
     useChatStore.getState().patchSessionBackendId(sessionId, 11);
     useSlidesStore.getState().setDeck(11, fakeDeck);
     useSlidesStore.getState().setCurrentPage(11, 1);
+    // The Slides panel must be open for slide_attached to be true.
+    useSlidesStore.setState({ open: true });
     // slideAttachedBySession[11] is unset → treated as true (attached)
 
     const { result } = renderHook(() => useChatStream());
@@ -146,6 +148,7 @@ describe("useChatStream current_view_page threading", () => {
     useChatStore.getState().patchSessionBackendId(sessionId, 11);
     useSlidesStore.getState().setDeck(11, fakeDeck);
     useSlidesStore.getState().setCurrentPage(11, 3);
+    useSlidesStore.setState({ open: true });
     useSlidesStore.getState().setSlideAttached(11, false);
 
     const { result } = renderHook(() => useChatStream());
@@ -179,5 +182,30 @@ describe("useChatStream current_view_page threading", () => {
       expect(captured.body).toBeDefined();
     });
     expect(captured.body!.slide_attached).toBe(false);
+  });
+
+  it("sends slide_attached=false when deck exists but Slides panel is closed (canvas-closed invariant)", async () => {
+    const captured: { body?: Record<string, unknown> } = {};
+    server.resetHandlers(captureBodyHandler(captured));
+
+    const sessionId = useChatStore.getState().newSession();
+    useChatStore.getState().patchSessionBackendId(sessionId, 11);
+    // Deck is seeded but the panel is closed (open: false — the default).
+    useSlidesStore.getState().setDeck(11, fakeDeck);
+    useSlidesStore.getState().setCurrentPage(11, 2);
+    // open defaults to false from beforeEach; slideAttachedBySession is unset (would default to true)
+
+    const { result } = renderHook(() => useChatStream());
+
+    await act(async () => {
+      await result.current.send(sessionId, "what does this paper say?");
+    });
+
+    await waitFor(() => {
+      expect(captured.body).toBeDefined();
+    });
+    // The Slides panel is closed → no slide context must be appended.
+    expect(captured.body!.slide_attached).toBe(false);
+    // current_view_page may still be present (deck edits need it — unchanged behavior).
   });
 });

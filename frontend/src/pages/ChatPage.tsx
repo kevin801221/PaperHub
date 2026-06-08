@@ -122,7 +122,7 @@ export function ChatPage() {
   const setSlideAttached = useSlidesStore((s) => s.setSlideAttached);
 
   const slideChip =
-    backendSessionId !== null && deckForChip
+    backendSessionId !== null && deckForChip && slidesOpen
       ? {
           page: currentPageForChip,
           attached: slideAttached,
