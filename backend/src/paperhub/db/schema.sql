@@ -8,7 +8,12 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
     -- deleted, so Undo can restore it and other devices hide it on next list.
     -- Empty sessions are hard-deleted instead; tombstoned rows are purged after
     -- a retention window (see purge_deleted_sessions).
-    deleted_at TEXT
+    deleted_at TEXT,
+    -- Fork lineage (SRS v2.30): the session this one was forked FROM, or NULL
+    -- for a normal (non-fork) session. ON DELETE SET NULL so purging the parent
+    -- orphans the fork gracefully (it falls back to a top-level row) rather than
+    -- cascading. The sidebar groups forks under their parent from this column.
+    forked_from_session_id INTEGER REFERENCES chat_sessions(id) ON DELETE SET NULL
 );
 
 CREATE TABLE IF NOT EXISTS paper_content (

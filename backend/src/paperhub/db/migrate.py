@@ -177,6 +177,22 @@ async def apply_schema(conn: aiosqlite.Connection) -> None:
         await conn.commit()
 
     # -----------------------------------------------------------------------
+    # v2.30: Idempotent column-add for chat_sessions.forked_from_session_id
+    # (fork lineage — the session a fork was branched FROM). A nullable
+    # self-referential FK with ON DELETE SET NULL; SQLite permits adding it via
+    # ALTER because the default is NULL. Pre-existing DBs created before the
+    # fork feature won't have it.
+    # -----------------------------------------------------------------------
+    async with conn.execute("PRAGMA table_info(chat_sessions)") as cur:
+        cols = {row[1] for row in await cur.fetchall()}
+    if "forked_from_session_id" not in cols:
+        await conn.execute(
+            "ALTER TABLE chat_sessions ADD COLUMN forked_from_session_id "
+            "INTEGER REFERENCES chat_sessions(id) ON DELETE SET NULL"
+        )
+        await conn.commit()
+
+    # -----------------------------------------------------------------------
     # Idempotent column-add for runs.search_results_json (paper-search cards
     # persisted per turn so they replay cross-device). Pre-existing DBs won't
     # have it.

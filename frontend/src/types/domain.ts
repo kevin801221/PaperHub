@@ -158,6 +158,9 @@ export interface ChatSession {
   title: string;
   messages: ChatMessage[];
   backend_session_id: number | null;
+  /** Backend id of the session this one was forked FROM (SRS v2.30), or null
+   *  for a normal session. Drives the sidebar's indented fork grouping. */
+  forked_from_session_id?: number | null;
 }
 
 /** Backend-of-record session row (GET /sessions). The frontend merges these
@@ -168,6 +171,8 @@ export interface SessionSummary {
   created_at: string;
   updated_at: string;
   message_count: number;
+  /** Backend id of the parent session for a fork (SRS v2.30), else null. */
+  forked_from_session_id?: number | null;
 }
 
 /** Result of POST /sessions/{id}/fork — the new session + the forked message

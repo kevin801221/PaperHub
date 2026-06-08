@@ -44,6 +44,9 @@ class SessionSummary(BaseModel):
     created_at: str
     updated_at: str
     message_count: int
+    # Fork lineage (SRS v2.30): the session this one was forked FROM, or None
+    # for a normal session. Drives the sidebar's indented fork grouping.
+    forked_from_session_id: int | None = None
 
 
 class RoutingDecisionOut(BaseModel):
@@ -120,7 +123,8 @@ async def list_sessions() -> list[SessionSummary]:
             """
             SELECT s.id, s.title, s.created_at,
                    COALESCE(MAX(m.created_at), s.created_at) AS updated_at,
-                   COUNT(m.id) AS message_count
+                   COUNT(m.id) AS message_count,
+                   s.forked_from_session_id
             FROM chat_sessions s
             LEFT JOIN messages m ON m.session_id = s.id
             WHERE s.deleted_at IS NULL
@@ -141,6 +145,7 @@ async def list_sessions() -> list[SessionSummary]:
             created_at=str(r[2]),
             updated_at=str(r[3]),
             message_count=int(r[4]),
+            forked_from_session_id=int(r[5]) if r[5] is not None else None,
         )
         for r in rows
     ]

@@ -693,8 +693,11 @@ async def test_fork_endpoint_creates_session_and_returns_prefill(
     assert [(m["role"], m["content"]) for m in msgs] == [
         ("user", "first"), ("assistant", "a1")]
 
-    listed = {s["id"] for s in (await sessions_client.get("/sessions")).json()}
+    listed = {s["id"]: s for s in (await sessions_client.get("/sessions")).json()}
     assert new_sid in listed
+    # The fork carries its lineage pointer; a normal session reports null.
+    assert listed[new_sid]["forked_from_session_id"] == 1
+    assert listed[1]["forked_from_session_id"] is None
 
 
 async def test_fork_endpoint_404_on_unknown_session(

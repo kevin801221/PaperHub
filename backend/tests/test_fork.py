@@ -87,6 +87,45 @@ async def test_fork_copies_only_slice_above_point(tmp_path: Path) -> None:
             assert (await cur.fetchone())[0] == '{"intent":"chitchat"}'
 
 
+async def test_fork_records_lineage_to_source(tmp_path: Path) -> None:
+    """The fork row records forked_from_session_id = the source session, so the
+    sidebar can group it under its parent (the title is unreliable post-send)."""
+    db = tmp_path / "t.db"
+    async with aiosqlite.connect(db) as conn:
+        await conn.execute("PRAGMA foreign_keys = ON")
+        await apply_schema(conn)
+        await conn.execute("INSERT INTO chat_sessions (title) VALUES ('Orig')")
+        await conn.commit()
+        r1 = await _turn(conn, 1, "q", "a")
+        res = await fork_session(
+            conn, source_session_id=1, fork_run_id=r1, workspace_dir=tmp_path)
+        async with conn.execute(
+            "SELECT forked_from_session_id FROM chat_sessions WHERE id = ?",
+            (res.new_session_id,)) as cur:
+            assert (await cur.fetchone())[0] == 1
+
+
+async def test_fork_lineage_nulled_when_source_purged(tmp_path: Path) -> None:
+    """ON DELETE SET NULL: hard-deleting the parent orphans the fork's lineage
+    pointer (it falls back to a top-level row) instead of cascading."""
+    db = tmp_path / "t.db"
+    async with aiosqlite.connect(db) as conn:
+        await conn.execute("PRAGMA foreign_keys = ON")
+        await apply_schema(conn)
+        await conn.execute("INSERT INTO chat_sessions (title) VALUES ('Orig')")
+        await conn.commit()
+        await _turn(conn, 1, "q", "a")
+        r2 = await _turn(conn, 1, "q2", "a2")
+        res = await fork_session(
+            conn, source_session_id=1, fork_run_id=r2, workspace_dir=tmp_path)
+        await conn.execute("DELETE FROM chat_sessions WHERE id = 1")
+        await conn.commit()
+        async with conn.execute(
+            "SELECT forked_from_session_id FROM chat_sessions WHERE id = ?",
+            (res.new_session_id,)) as cur:
+            assert (await cur.fetchone())[0] is None
+
+
 async def test_fork_copies_papers_and_session_memories(tmp_path: Path) -> None:
     db = tmp_path / "t.db"
     async with aiosqlite.connect(db) as conn:

@@ -30,7 +30,11 @@ interface ChatState {
    *  backend row (with copied history), so insert it with backend_session_id
    *  set + select it (useSessionsSync hydrates its messages on activation).
    *  Returns the local id. Idempotent on an already-present backend id. */
-  addForkedSession: (backendId: number, title: string) => number;
+  addForkedSession: (
+    backendId: number,
+    title: string,
+    forkedFromSessionId?: number | null,
+  ) => number;
   selectSession: (id: number) => void;
   appendMessage: (sessionId: number, message: ChatMessage) => void;
   setRouting: (
@@ -152,7 +156,7 @@ export const useChatStore = create<ChatState>()(
         return id;
       },
 
-      addForkedSession: (backendId, title) => {
+      addForkedSession: (backendId, title, forkedFromSessionId = null) => {
         const existing = get().sessions.find(
           (s) => s.backend_session_id === backendId,
         );
@@ -163,7 +167,13 @@ export const useChatStore = create<ChatState>()(
         const id = get()._nextId;
         set((s) => ({
           sessions: [
-            { id, title, messages: [], backend_session_id: backendId },
+            {
+              id,
+              title,
+              messages: [],
+              backend_session_id: backendId,
+              forked_from_session_id: forkedFromSessionId,
+            },
             ...s.sessions,
           ],
           activeSessionId: id,
@@ -485,7 +495,16 @@ export const useChatStore = create<ChatState>()(
                 sess.backend_session_id !== null
                   ? byBackendId.get(sess.backend_session_id)
                   : undefined;
-              return summary ? { ...sess, title: summary.title } : sess;
+              // Backend owns the title AND the fork lineage (the parent may be
+              // purged, flipping forked_from to null — keep the mirror exact).
+              return summary
+                ? {
+                    ...sess,
+                    title: summary.title,
+                    forked_from_session_id:
+                      summary.forked_from_session_id ?? null,
+                  }
+                : sess;
             });
 
           const localBackendIds = new Set(
@@ -503,6 +522,7 @@ export const useChatStore = create<ChatState>()(
               title: summary.title,
               messages: [],
               backend_session_id: summary.id,
+              forked_from_session_id: summary.forked_from_session_id ?? null,
             });
             nextId += 1;
           }

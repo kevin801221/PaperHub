@@ -2,6 +2,7 @@ import {
   BookMarked,
   ChevronsLeft,
   ChevronsRight,
+  CornerDownRight,
   MessageSquare,
   Plus,
   Trash2,
@@ -12,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
 import { ReferenceSourcesPanel } from "@/components/references/ReferenceSourcesPanel";
 import { deleteBackendSession, restoreBackendSession } from "@/lib/api";
+import { groupSessionsByFork } from "@/lib/sessionTree";
 import { useChatStore } from "@/store/chat";
 
 export function Sidebar() {
@@ -205,10 +207,13 @@ export function Sidebar() {
                 )}
                 {sessions.length > 0 && (
                   <ul className="space-y-1">
-                    {sessions.map((s) => {
+                    {groupSessionsByFork(sessions).map(({ session: s, isFork }) => {
                       const isActive = s.id === activeSessionId;
                       return (
-                        <li key={s.id} className="group/row relative">
+                        <li
+                          key={s.id}
+                          className={`group/row relative ${isFork ? "ml-3" : ""}`}
+                        >
                           <button
                             onClick={() => selectSession(s.id)}
                             aria-current={isActive ? "page" : undefined}
@@ -218,7 +223,15 @@ export function Sidebar() {
                                 : "hover:bg-accent/50 text-foreground"
                             }`}
                           >
-                            {s.title}
+                            <span className="flex items-center gap-1.5 min-w-0">
+                              {isFork && (
+                                <CornerDownRight
+                                  className="h-3.5 w-3.5 shrink-0 text-muted-foreground"
+                                  aria-hidden
+                                />
+                              )}
+                              <span className="truncate">{s.title}</span>
+                            </span>
                           </button>
                           <button
                             type="button"

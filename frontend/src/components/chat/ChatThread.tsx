@@ -54,7 +54,13 @@ export function ChatThread({ session }: { session: ChatSession | null }) {
       try {
         const res = await forkSession(session.backend_session_id, runId);
         const store = useChatStore.getState();
-        store.addForkedSession(res.session_id, res.title);
+        // Pass the parent's backend id so the sidebar groups the fork under it
+        // immediately (before the next GET /sessions sync confirms it).
+        store.addForkedSession(
+          res.session_id,
+          res.title,
+          session.backend_session_id,
+        );
         // Prefill the forked message — editable, NOT sent (edit = re-prompt;
         // send unchanged = retry). requestComposerText focuses the composer.
         store.requestComposerText(res.forked_message);
