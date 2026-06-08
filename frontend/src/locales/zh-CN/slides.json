@@ -1,0 +1,88 @@
+{
+  "panel": {
+    "title": "幻灯片",
+    "status": {
+      "ready": "就绪",
+      "error": "错误"
+    },
+    "nav": {
+      "previous": "上一张幻灯片",
+      "next": "下一张幻灯片",
+      "pageCounter": "{{current}} / {{total}}"
+    },
+    "present": {
+      "present": "演示",
+      "presenting": "演示中",
+      "openAudience": "打开观众窗口",
+      "presentingHint": "演示中——请从演示者栏停止"
+    },
+    "download": {
+      "pdf": "下载 PDF",
+      "latex": "下载 LaTeX 源码",
+      "tex": ".tex"
+    },
+    "filmstrip": {
+      "resize": "调整缩略图栏宽度",
+      "slide": "第 {{n}} 张幻灯片"
+    },
+    "mask": {
+      "updating": "更新幻灯片中…",
+      "restoring": "还原版本中…"
+    },
+    "note": {
+      "heading": "演讲备注",
+      "cancel": "取消编辑备注",
+      "save": "保存演讲备注",
+      "edit": "编辑演讲备注",
+      "field": "演讲备注",
+      "empty": "此幻灯片没有演讲备注"
+    }
+  },
+  "deckChip": {
+    "fallbackTitle": "幻灯片",
+    "slide_one": "{{count}} 张幻灯片",
+    "slide_other": "{{count}} 张幻灯片",
+    "status": {
+      "ready": "就绪",
+      "error": "错误"
+    },
+    "withNotes": "含备注",
+    "active": "使用中",
+    "activeTitle": "这是当前在幻灯片面板打开的版本",
+    "open": "打开",
+    "openAria": "打开幻灯片",
+    "switch": "切换",
+    "switchAria": "切换到此版本",
+    "switchTitle": "还原此幻灯片版本并重新加载幻灯片面板",
+    "switchTitleLegacy": "这张较旧的卡片早于逐回合版本追踪功能",
+    "downloadPdf": "下载 PDF",
+    "generateNotes": "生成备注",
+    "editNotes": "编辑备注",
+    "generateNotesPrefill": "为这份幻灯片生成演讲备注",
+    "editNotesPrefill": "编辑这份幻灯片的演讲备注：",
+    "edit": "编辑",
+    "editSlideAria": "编辑幻灯片",
+    "editSlidePrefill": "编辑这张幻灯片：",
+    "restoreFailed": "还原版本失败"
+  },
+  "presenter": {
+    "elapsed": "已用时间",
+    "audienceConnected": "观众已连接",
+    "audienceClosed": "观众窗口已关闭",
+    "next": "下一张 →",
+    "stop": "停止",
+    "stopAria": "停止演示"
+  },
+  "stage": {
+    "warmup": "正在启动幻灯片代理…",
+    "resolve": "正在收集论文…",
+    "understand": "正在研读论文…",
+    "narrate": "正在规划演讲大纲…",
+    "draft": "正在草拟幻灯片框架…",
+    "coherence": "正在顺稿…",
+    "figures": "正在放置图表…",
+    "compile": "正在编译幻灯片（LaTeX）…",
+    "notes": "正在收尾…",
+    "building": "正在构建幻灯片…"
+  }
+}

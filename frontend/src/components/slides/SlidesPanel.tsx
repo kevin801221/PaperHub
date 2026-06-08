@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
+import { useTranslation } from "react-i18next";
 import {
   Check,
   ChevronLeft,
@@ -75,6 +76,7 @@ export function SlidesPanel({
   stage,
   onSaveNote,
 }: Props) {
+  const { t } = useTranslation("slides");
   const deck = useSlidesStore((s) => s.deckBySession[sessionId]);
   const revision = useSlidesStore((s) => s.deckRevisionBySession[sessionId] ?? 0);
   // True while a DeckChip "Switch to this version" round-trip is in flight.
@@ -246,7 +248,7 @@ export function SlidesPanel({
   // why the panel masked (version switch vs. chat-turn edit). The chat-turn's
   // ``stage`` prop carries live slide-agent stage names when ``busy`` is set.
   const stageLabel = restoringVersion
-    ? "Restoring version…"
+    ? t("panel.mask.restoring")
     : stage;
 
   // Keyboard navigation.
@@ -357,16 +359,18 @@ export function SlidesPanel({
       {/* Header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border shrink-0">
         <span className="text-xs font-semibold truncate flex-1 text-foreground">
-          {deck?.title ?? "Slides"}
+          {deck?.title ?? t("panel.title")}
         </span>
 
         {/* Status indicator */}
         {deck?.status === "ok" ? (
           <span className="text-xs text-green-600 dark:text-green-400 shrink-0">
-            ready
+            {t("panel.status.ready")}
           </span>
         ) : deck?.status === "error" ? (
-          <span className="text-xs text-destructive shrink-0">error</span>
+          <span className="text-xs text-destructive shrink-0">
+            {t("panel.status.error")}
+          </span>
         ) : null}
 
         {/* Navigation */}
@@ -374,20 +378,23 @@ export function SlidesPanel({
           type="button"
           size="icon-xs"
           variant="ghost"
-          aria-label="previous slide"
+          aria-label={t("panel.nav.previous")}
           disabled={currentPage <= 1}
           onClick={() => goTo(currentPage - 1)}
         >
           <ChevronLeft className="h-3 w-3" />
         </Button>
         <span className="text-xs text-muted-foreground tabular-nums shrink-0">
-          {currentPage} / {numPages || deck?.page_count || "–"}
+          {t("panel.nav.pageCounter", {
+            current: currentPage,
+            total: numPages || deck?.page_count || "–",
+          })}
         </span>
         <Button
           type="button"
           size="icon-xs"
           variant="ghost"
-          aria-label="next slide"
+          aria-label={t("panel.nav.next")}
           disabled={numPages > 0 && currentPage >= numPages}
           onClick={() => goTo(currentPage + 1)}
         >
@@ -399,11 +406,17 @@ export function SlidesPanel({
           type="button"
           size="icon-xs"
           variant={presenting ? "default" : "ghost"}
-          aria-label={presenting ? "presenting" : "present"}
+          aria-label={
+            presenting ? t("panel.present.presenting") : t("panel.present.present")
+          }
           aria-pressed={presenting}
           disabled={presenting || numPages === 0 || deck?.status !== "ok"}
           onClick={present}
-          title={presenting ? "Presenting — Stop from the presenter bar" : "Open the audience window"}
+          title={
+            presenting
+              ? t("panel.present.presentingHint")
+              : t("panel.present.openAudience")
+          }
         >
           <Presentation className="h-3 w-3" />
         </Button>
@@ -412,7 +425,7 @@ export function SlidesPanel({
         <a
           href={deckPdfUrl(sessionId)}
           download
-          aria-label="Download PDF"
+          aria-label={t("panel.download.pdf")}
           className="text-muted-foreground hover:text-foreground transition-colors"
         >
           <Download className="h-3 w-3" />
@@ -420,10 +433,10 @@ export function SlidesPanel({
         <a
           href={deckTexUrl(sessionId)}
           download
-          aria-label="Download LaTeX source"
+          aria-label={t("panel.download.latex")}
           className="text-xs text-muted-foreground hover:text-foreground transition-colors"
         >
-          .tex
+          {t("panel.download.tex")}
         </a>
       </div>
 
@@ -458,7 +471,7 @@ export function SlidesPanel({
                   <button
                     key={pageNum}
                     type="button"
-                    aria-label={`slide ${pageNum}`}
+                    aria-label={t("panel.filmstrip.slide", { n: pageNum })}
                     onClick={() => goTo(pageNum)}
                     className={`w-full rounded overflow-hidden border-2 transition-colors shrink-0 ${
                       isActive
@@ -480,7 +493,7 @@ export function SlidesPanel({
           <div
             role="separator"
             aria-orientation="vertical"
-            aria-label="resize filmstrip"
+            aria-label={t("panel.filmstrip.resize")}
             onPointerDown={onFilmstripDividerPointerDown}
             className="w-1.5 cursor-col-resize bg-border hover:bg-primary/40 transition-colors shrink-0"
           />
@@ -582,7 +595,9 @@ export function SlidesPanel({
               <span className="h-2 w-2 rounded-full bg-muted-foreground motion-safe:animate-pulse [animation-delay:400ms]" />
             </div>
             <span className="text-sm font-medium text-foreground">
-              {restoringVersion ? "Restoring version…" : "Updating slides…"}
+              {restoringVersion
+                ? t("panel.mask.restoring")
+                : t("panel.mask.updating")}
             </span>
             {stageLabel && !restoringVersion && (
               <span className="px-4 text-center text-xs text-muted-foreground">
@@ -612,7 +627,7 @@ export function SlidesPanel({
       >
         <div className="mb-1 flex items-center gap-1 shrink-0">
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">
-            Speaker note
+            {t("panel.note.heading")}
           </p>
           {/* Edit / Save+Cancel controls live in the header (always visible) so
               a tall note textarea never pushes them out of the scroll area. */}
@@ -622,7 +637,7 @@ export function SlidesPanel({
                 type="button"
                 size="icon-xs"
                 variant="ghost"
-                aria-label="cancel note edit"
+                aria-label={t("panel.note.cancel")}
                 onClick={cancelEditNote}
                 disabled={savingNote}
               >
@@ -632,7 +647,7 @@ export function SlidesPanel({
                 type="button"
                 size="icon-xs"
                 variant="ghost"
-                aria-label="save speaker note"
+                aria-label={t("panel.note.save")}
                 className="text-primary"
                 onClick={() => void saveNote()}
                 disabled={savingNote}
@@ -650,7 +665,7 @@ export function SlidesPanel({
                 type="button"
                 size="icon-xs"
                 variant="ghost"
-                aria-label="edit speaker note"
+                aria-label={t("panel.note.edit")}
                 className="ml-auto"
                 onClick={beginEditNote}
               >
@@ -662,7 +677,7 @@ export function SlidesPanel({
 
         {editingNote ? (
           <textarea
-            aria-label="speaker note"
+            aria-label={t("panel.note.field")}
             className="flex-1 min-h-0 w-full resize-none rounded border border-border bg-background p-2 text-xs leading-relaxed focus:outline-none focus:ring-1 focus:ring-primary"
             value={noteDraft}
             onChange={(e) => setNoteDraft(e.target.value)}
@@ -675,7 +690,7 @@ export function SlidesPanel({
           </p>
         ) : (
           <p className="flex-1 min-h-0 text-xs text-muted-foreground italic">
-            No speaker note for this slide
+            {t("panel.note.empty")}
           </p>
         )}
       </div>

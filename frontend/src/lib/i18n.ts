@@ -8,24 +8,28 @@ import enCommon from "../locales/en/common.json";
 import enMemory from "../locales/en/memory.json";
 import enReferences from "../locales/en/references.json";
 import enSettings from "../locales/en/settings.json";
+import enSlides from "../locales/en/slides.json";
 import jaCanvas from "../locales/ja/canvas.json";
 import jaChat from "../locales/ja/chat.json";
 import jaCommon from "../locales/ja/common.json";
 import jaMemory from "../locales/ja/memory.json";
 import jaReferences from "../locales/ja/references.json";
 import jaSettings from "../locales/ja/settings.json";
+import jaSlides from "../locales/ja/slides.json";
 import zhCNCanvas from "../locales/zh-CN/canvas.json";
 import zhCNChat from "../locales/zh-CN/chat.json";
 import zhCNCommon from "../locales/zh-CN/common.json";
 import zhCNMemory from "../locales/zh-CN/memory.json";
 import zhCNReferences from "../locales/zh-CN/references.json";
 import zhCNSettings from "../locales/zh-CN/settings.json";
+import zhCNSlides from "../locales/zh-CN/slides.json";
 import zhTWCanvas from "../locales/zh-TW/canvas.json";
 import zhTWChat from "../locales/zh-TW/chat.json";
 import zhTWCommon from "../locales/zh-TW/common.json";
 import zhTWMemory from "../locales/zh-TW/memory.json";
 import zhTWReferences from "../locales/zh-TW/references.json";
 import zhTWSettings from "../locales/zh-TW/settings.json";
+import zhTWSlides from "../locales/zh-TW/slides.json";
 
 export const SUPPORTED_LANGUAGES = ["en", "zh-TW", "zh-CN", "ja"] as const;
 export type SupportedLanguage = (typeof SUPPORTED_LANGUAGES)[number];
@@ -47,6 +51,7 @@ const resources = {
     memory: enMemory,
     references: enReferences,
     canvas: enCanvas,
+    slides: enSlides,
   },
   "zh-TW": {
     common: zhTWCommon,
@@ -55,6 +60,7 @@ const resources = {
     memory: zhTWMemory,
     references: zhTWReferences,
     canvas: zhTWCanvas,
+    slides: zhTWSlides,
   },
   "zh-CN": {
     common: zhCNCommon,
@@ -63,6 +69,7 @@ const resources = {
     memory: zhCNMemory,
     references: zhCNReferences,
     canvas: zhCNCanvas,
+    slides: zhCNSlides,
   },
   ja: {
     common: jaCommon,
@@ -71,6 +78,7 @@ const resources = {
     memory: jaMemory,
     references: jaReferences,
     canvas: jaCanvas,
+    slides: jaSlides,
   },
 } as const;
 
@@ -81,7 +89,7 @@ void i18n
     resources,
     fallbackLng: "en",
     supportedLngs: [...SUPPORTED_LANGUAGES],
-    ns: ["common", "settings", "chat", "memory", "references", "canvas"],
+    ns: ["common", "settings", "chat", "memory", "references", "canvas", "slides"],
     defaultNS: "common",
     interpolation: { escapeValue: false },
     detection: {
