@@ -70,6 +70,64 @@ async def test_apply_schema_idempotent_for_match_text(
 
 
 # ---------------------------------------------------------------------------
+# v2.30: chat_sessions.forked_from_session_id (fork lineage) — the ALTER branch
+# that fires on an EXISTING pre-v2.30 DB (the fresh-schema path is covered by
+# schema.sql, which already has the column).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_migration_adds_forked_from_to_existing_db(tmp_path: Path) -> None:
+    """A DB created before v2.30 (chat_sessions WITHOUT the column) gets
+    forked_from_session_id added by the idempotent ALTER branch, with the
+    self-referential ON DELETE SET NULL FK present AND enforced."""
+    db_path = tmp_path / "old.db"
+    async with aiosqlite.connect(db_path) as conn:
+        await conn.execute("PRAGMA foreign_keys = ON")
+        # Simulate a pre-v2.30 chat_sessions: no forked_from_session_id (and no
+        # deleted_at — both column-add migrations should run).
+        await conn.execute(
+            "CREATE TABLE chat_sessions ("
+            " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            " created_at TEXT NOT NULL DEFAULT (datetime('now')),"
+            " title TEXT NOT NULL DEFAULT 'New chat')"
+        )
+        await conn.commit()
+
+        await apply_schema(conn)  # the upgrade path (runs the ALTER)
+        await apply_schema(conn)  # idempotent — must not raise
+
+        async with conn.execute("PRAGMA table_info(chat_sessions)") as cur:
+            cols = {r[1] for r in await cur.fetchall()}
+        assert "forked_from_session_id" in cols
+
+        # The self-FK carries ON DELETE SET NULL.
+        async with conn.execute(
+            "PRAGMA foreign_key_list(chat_sessions)"
+        ) as cur:
+            fks = await cur.fetchall()
+        # row: (id, seq, table, from, to, on_update, on_delete, match)
+        assert any(
+            r[3] == "forked_from_session_id" and r[6].upper() == "SET NULL"
+            for r in fks
+        )
+
+        # FK enforced: deleting the parent nulls the fork's lineage pointer.
+        await conn.execute("INSERT INTO chat_sessions (title) VALUES ('parent')")
+        await conn.execute(
+            "INSERT INTO chat_sessions (title, forked_from_session_id) "
+            "VALUES ('fork', 1)"
+        )
+        await conn.commit()
+        await conn.execute("DELETE FROM chat_sessions WHERE id = 1")
+        await conn.commit()
+        async with conn.execute(
+            "SELECT forked_from_session_id FROM chat_sessions WHERE id = 2"
+        ) as cur:
+            assert (await cur.fetchone())[0] is None
+
+
+# ---------------------------------------------------------------------------
 # F2.1 A2': chunks.page + chunks.bbox columns (Marker block provenance)
 # ---------------------------------------------------------------------------
 

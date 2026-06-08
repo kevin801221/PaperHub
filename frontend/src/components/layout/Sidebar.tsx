@@ -209,6 +209,14 @@ export function Sidebar() {
                   <ul className="space-y-1">
                     {groupSessionsByFork(sessions).map(({ session: s, isFork }) => {
                       const isActive = s.id === activeSessionId;
+                      // The indent is visual; give screen readers the lineage
+                      // explicitly. Resolve the parent's title from its backend id.
+                      const parentTitle = isFork
+                        ? sessions.find(
+                            (p) =>
+                              p.backend_session_id === s.forked_from_session_id,
+                          )?.title
+                        : undefined;
                       return (
                         <li
                           key={s.id}
@@ -217,6 +225,11 @@ export function Sidebar() {
                           <button
                             onClick={() => selectSession(s.id)}
                             aria-current={isActive ? "page" : undefined}
+                            aria-label={
+                              parentTitle
+                                ? `${s.title} (forked from ${parentTitle})`
+                                : undefined
+                            }
                             className={`w-full text-left text-sm rounded-md px-3 py-2 pr-8 transition-colors ${
                               isActive
                                 ? "bg-accent text-accent-foreground"
