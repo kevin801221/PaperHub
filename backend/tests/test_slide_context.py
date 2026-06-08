@@ -35,7 +35,7 @@ async def test_page_zero_returns_none(tmp_path) -> None:
         assert await build_slide_context(conn, session_id=1, current_view_page=0) is None
 
 
-async def test_text_frame_yields_title_and_bullets(tmp_path) -> None:
+async def test_text_frame_includes_full_verbatim_content(tmp_path) -> None:
     async with open_db(str(tmp_path / "t.db")) as conn:
         await apply_schema(conn)
         deck_id = await _seed_deck(conn, page_count=2)
@@ -52,10 +52,36 @@ async def test_text_frame_yields_title_and_bullets(tmp_path) -> None:
                            page_start=2, page_end=2)])
         ctx = await build_slide_context(conn, session_id=1, current_view_page=1)
         assert ctx is not None
+        # Full frame LaTeX is handed over verbatim (title + items + markers).
+        assert "BEGIN SLIDE LATEX" in ctx
         assert "Coarse-to-fine RVQ" in ctx
-        assert "Action patchifier partitions sequences" in ctx
+        assert "\\item Action patchifier partitions sequences." in ctx
         assert "RVQ stabilizes training" in ctx
-        assert "Figure" not in ctx
+        # No figure on this slide → no caption line.
+        assert "Captions for" not in ctx
+
+
+async def test_frame_with_display_math_includes_equation_verbatim(tmp_path) -> None:
+    """Regression (the run-415 bug): a slide whose content is a display-math
+    equation with NO \\item bullets must still hand the model the actual
+    equation LaTeX — otherwise 'explain this formula' grounds on the wrong one."""
+    async with open_db(str(tmp_path / "t.db")) as conn:
+        await apply_schema(conn)
+        deck_id = await _seed_deck(conn, page_count=1)
+        frame = (
+            "\\begin{frame}{Block-wise Autoregression}\n"
+            "  BAR reduces sequence length:\n"
+            "  \\[\n"
+            "    \\mathcal{L}_{\\text{BAR}} = - \\sum_{j=1}^{J} \\sum_{i=1}^{B} "
+            "\\log p_\\theta(c_{j,i} \\mid C_{<j}, I_t, s_t, x)\n"
+            "  \\]\n\\end{frame}"
+        )
+        await replace_deck_slides(conn, deck_id=deck_id, slides=[
+            DeckSlideInput(slide_index=0, frame_tex=frame, page_start=1, page_end=1)])
+        ctx = await build_slide_context(conn, session_id=1, current_view_page=1)
+        assert ctx is not None
+        assert "\\mathcal{L}_{\\text{BAR}}" in ctx
+        assert "\\log p_\\theta(c_{j,i} \\mid C_{<j}, I_t, s_t, x)" in ctx
 
 
 async def test_page_out_of_range_returns_none(tmp_path) -> None:
@@ -69,7 +95,8 @@ async def test_page_out_of_range_returns_none(tmp_path) -> None:
 
 
 async def test_frame_title_extracted_with_option_and_overlay_specs(tmp_path) -> None:
-    """Regression: _BEGINFRAME_TITLE_RE must match option/overlay variants."""
+    """The slide title is handed to the model for option/overlay frame forms
+    (it rides along in the verbatim frame LaTeX)."""
     async with open_db(str(tmp_path / "t.db")) as conn:
         await apply_schema(conn)
         deck_id = await _seed_deck(conn, page_count=3)

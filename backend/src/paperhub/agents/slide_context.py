@@ -1,10 +1,14 @@
 """Active-slide context for slide-aware QA (SRS v2.29).
 
-When the composer's slide chip is attached, ``build_slide_context`` produces a
-compact block that anchors paper_qa's section navigation onto the right part of
-the paper. Returns ``None`` (→ plain paper_qa, no regression) whenever there is
-no deck / no on-screen page / no matching row. ``slide_aware_query`` prepends
-the block to the resolved query for both the subagent and the finalizer.
+When the composer's slide chip is attached, ``build_slide_context`` hands the
+model the **full LaTeX source of the on-screen slide verbatim** (equations,
+text, items, everything — we do NOT pre-select what the model "needs"), plus
+the captions for any ``\\includegraphics`` keys (which are opaque on their own).
+This anchors paper_qa onto exactly what is on the slide — e.g. "explain this
+formula" sees the actual formula, not a guessed one. Returns ``None`` (→ plain
+paper_qa, no regression) whenever there is no deck / no on-screen page / no
+matching row. ``slide_aware_query`` prepends the block to the resolved query
+for both the subagent and the finalizer.
 """
 from __future__ import annotations
 
@@ -19,27 +23,7 @@ from paperhub.db.deck_slides import get_deck_slides
 from paperhub.db.decks import get_deck
 from paperhub.pipelines.slide_pipeline.figure_inventory import build_inventory
 
-_FRAMETITLE_RE = re.compile(r"\\frametitle\{([^}]*)\}")
-_BEGINFRAME_TITLE_RE = re.compile(
-    r"\\begin\{frame\}\s*(?:<[^>]*>)?\s*(?:\[[^\]]*\])?\s*\{([^}]*)\}"
-)
 _GRAPHICS_RE = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}")
-_ITEM_RE = re.compile(r"\\item\s+(.+)")
-
-
-def _frame_title(frame_tex: str) -> str:
-    m = _FRAMETITLE_RE.search(frame_tex) or _BEGINFRAME_TITLE_RE.search(frame_tex)
-    return (m.group(1).strip() if m else "") or "(untitled slide)"
-
-
-def _strip_latex(s: str) -> str:
-    s = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?", " ", s)
-    s = s.replace("{", " ").replace("}", " ")
-    return re.sub(r"\s+", " ", s).strip()
-
-
-def _frame_bullets(frame_tex: str) -> list[str]:
-    return [b for b in (_strip_latex(m.group(1)) for m in _ITEM_RE.finditer(frame_tex)) if b]
 
 
 def _frame_figure_keys(frame_tex: str) -> list[str]:
@@ -80,23 +64,29 @@ async def build_slide_context(
         return None
 
     lines = [
-        "The user is currently viewing a slide from a presentation deck "
-        "generated from the reference paper(s). Use it to locate and explain "
-        "the relevant part of the paper(s) that the slide is based on.",
-        f"Active slide (page {current_view_page}) title: {_frame_title(row.frame_tex)}",
+        "The user is currently viewing the slide below (page "
+        f"{current_view_page}) in a presentation deck generated from the "
+        "reference paper(s). Its FULL LaTeX source follows verbatim. Answer the "
+        "user's question about EXACTLY what is on THIS slide (the specific "
+        "equation, figure, or statement shown), grounding details in the "
+        "paper(s). Do NOT substitute a different equation/figure from the paper "
+        "than the one on the slide.",
+        "--- BEGIN SLIDE LATEX ---",
+        row.frame_tex.strip(),
+        "--- END SLIDE LATEX ---",
     ]
-    bullets = _frame_bullets(row.frame_tex)
-    if bullets:
-        lines.append("Slide bullet points: " + " | ".join(bullets))
 
     fig_keys = _frame_figure_keys(row.frame_tex)
     if fig_keys:
         papers = await _enabled_paper_keys(conn, session_id)
         inventory = await asyncio.to_thread(build_inventory, papers)
         by_key = {f.key: f.caption for f in inventory}
-        captions = [by_key[k] for k in fig_keys if k in by_key]
+        captions = [f"{k}: {by_key[k]}" for k in fig_keys if k in by_key]
         if captions:
-            lines.append("Figure(s) shown on this slide: " + " || ".join(captions))
+            lines.append(
+                "Captions for the \\includegraphics keys on this slide — "
+                + " | ".join(captions)
+            )
     return "\n".join(lines)
 
 

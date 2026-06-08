@@ -465,6 +465,11 @@ async def run_paper_qa_subagent(
         step.record_args({
             "paper_content_id": paper_content_id,
             "title": title,
+            # Record the FULL query the model is fed — when an active slide is
+            # attached this is the slide LaTeX + the user's question, so a
+            # mis-grounded answer is diagnosable from the DB alone (no re-run /
+            # no reconstruct script). Agent-flow observability policy.
+            "user_message": user_message,
         })
 
         # +2: one for a free list_sections turn (before any reads), one safety

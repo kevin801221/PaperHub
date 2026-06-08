@@ -161,6 +161,10 @@ async def paper_qa_finalize(
         step.record_args({
             "n_papers": len(per_paper_picks),
             "n_chunks": sum(len(p.picked_chunks) for p in per_paper_picks),
+            # The full query the finalizer is fed (slide LaTeX + question when a
+            # slide is attached) — recorded so a mis-grounded final answer is
+            # diagnosable from the DB. Agent-flow observability policy.
+            "user_message": user_message,
         })
         collected: list[str] = []
         async for tok in adapter.stream(
