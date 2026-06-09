@@ -1,0 +1,115 @@
+{
+  "restartBadge": "Restart to apply",
+  "restartPending": "Restart the backend to apply: {{keys}}",
+  "replace": "Replace",
+  "remove": "Remove",
+  "add": "Add",
+  "setIndicator": "••• set",
+  "notSet": "not set",
+  "providerKeyPlaceholder": "PROVIDER_API_KEY",
+  "valuePlaceholder": "value",
+  "saveFailed": "Couldn't save the setting",
+  "loadFailed": "Couldn't load settings.",
+  "retry": "Retry",
+  "category": {
+    "models_providers": "Models & providers",
+    "agents_memory": "Agents & memory",
+    "integrations": "Integrations",
+    "system": "System"
+  },
+  "advancedModels": "Per-slot model overrides",
+  "field": {
+    "PAPERHUB_MODEL_SMALL": {
+      "label": "Small-tier model",
+      "help": "Default for classifiers / fast tool calls."
+    },
+    "PAPERHUB_MODEL_FLAGSHIP": {
+      "label": "Flagship-tier model",
+      "help": "Default for user-facing prose."
+    },
+    "PAPERHUB_ROUTER_MODEL": {
+      "label": "Router model",
+      "help": "Picks the intent for each turn (chitchat / paper_search / paper_qa / slides …). Defaults to the small tier."
+    },
+    "PAPERHUB_CHITCHAT_MODEL": {
+      "label": "Chitchat model",
+      "help": "Small-talk replies when the router picks chitchat. Defaults to the small tier."
+    },
+    "PAPERHUB_PAPER_QA_MODEL": {
+      "label": "paper_qa finalizer",
+      "help": "Cross-paper answer synthesis, streamed to you. Defaults to the flagship tier."
+    },
+    "PAPERHUB_PAPER_QA_SUBAGENT_MODEL": {
+      "label": "paper_qa subagent",
+      "help": "Per-paper section navigation + chunk selection. Defaults to the small tier."
+    },
+    "PAPERHUB_SQL_AGENT_MODEL": {
+      "label": "SQL planner",
+      "help": "library_stats NL→SQL planning + self-repair. Defaults to the small tier."
+    },
+    "PAPERHUB_SQL_ANSWER_MODEL": {
+      "label": "SQL answer",
+      "help": "library_stats natural-language answer phrasing. Defaults to the flagship tier."
+    },
+    "PAPERHUB_MEMORY_CONFLICT_MODEL": {
+      "label": "Memory conflict detector",
+      "help": "Checks whether a new memory contradicts an existing one. Defaults to the small tier."
+    },
+    "PAPERHUB_REPORT_RESOLVE_MODEL": {
+      "label": "Slide resolver",
+      "help": "Resolves enabled papers + classifies deck commands. Defaults to the small tier."
+    },
+    "PAPERHUB_REPORT_NOTES_MODEL": {
+      "label": "Slide notes author",
+      "help": "Writes the deck's speaker notes. Defaults to the flagship tier."
+    },
+    "PAPERHUB_REPORT_PLAN_MODEL": {
+      "label": "Slide agent",
+      "help": "Per-paper gather-context + the slide agent. Defaults to the flagship tier."
+    },
+    "PAPERHUB_REPORT_SECTION_MODEL": {
+      "label": "Slide single-frame edit",
+      "help": "Single-frame slide / title / preamble edits. Defaults to the flagship tier."
+    },
+    "PAPERHUB_PAPER_QA_MAX_SECTION_READS": {
+      "label": "Max section reads / subagent turn"
+    },
+    "PAPERHUB_SESSION_RETENTION_DAYS": {
+      "label": "Soft-deleted session retention (days)"
+    },
+    "PAPERHUB_MARKER_MAX_PAGES": {
+      "label": "Marker pages per /extract call"
+    },
+    "PAPERHUB_MEMORY_RECALL": {
+      "label": "Inject recalled memories",
+      "help": "Surface active memories to answering agents."
+    },
+    "PAPERHUB_SEMANTIC_SCHOLAR_API_KEY": {
+      "label": "Semantic Scholar API key",
+      "help": "Optional; the unauthenticated tier is rate-limited."
+    },
+    "PAPERHUB_UNPAYWALL_EMAIL": {
+      "label": "Unpaywall contact email",
+      "help": "Enables the DOI→free-PDF fallback. Used for abuse logging only."
+    },
+    "PAPERHUB_MAX_UPLOAD_MB": {
+      "label": "Max PDF upload (MiB)"
+    },
+    "PAPERHUB_WORKSPACE": {
+      "label": "Workspace directory",
+      "help": "Set via env var at boot; restart the backend to change."
+    },
+    "PAPERHUB_LOG_LEVEL": {
+      "label": "Log level"
+    },
+    "PAPERHUB_MARKER_URL": {
+      "label": "Marker service URL"
+    },
+    "PAPERHUB_INPROCESS_MARKER": {
+      "label": "In-process Marker"
+    },
+    "PAPERHUB_SLIDE_STYLE_PROFILE": {
+      "label": "Slide style profile"
+    }
+  }
+}

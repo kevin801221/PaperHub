@@ -1,0 +1,88 @@
+{
+  "panel": {
+    "title": "Slides",
+    "status": {
+      "ready": "ready",
+      "error": "error"
+    },
+    "nav": {
+      "previous": "previous slide",
+      "next": "next slide",
+      "pageCounter": "{{current}} / {{total}}"
+    },
+    "present": {
+      "present": "present",
+      "presenting": "presenting",
+      "openAudience": "Open the audience window",
+      "presentingHint": "Presenting — Stop from the presenter bar"
+    },
+    "download": {
+      "pdf": "Download PDF",
+      "latex": "Download LaTeX source",
+      "tex": ".tex"
+    },
+    "filmstrip": {
+      "resize": "resize filmstrip",
+      "slide": "slide {{n}}"
+    },
+    "mask": {
+      "updating": "Updating slides…",
+      "restoring": "Restoring version…"
+    },
+    "note": {
+      "heading": "Speaker note",
+      "cancel": "cancel note edit",
+      "save": "save speaker note",
+      "edit": "edit speaker note",
+      "field": "speaker note",
+      "empty": "No speaker note for this slide"
+    }
+  },
+  "deckChip": {
+    "fallbackTitle": "Slides",
+    "slide_one": "{{count}} slide",
+    "slide_other": "{{count}} slides",
+    "status": {
+      "ready": "ready",
+      "error": "error"
+    },
+    "withNotes": "with notes",
+    "active": "active",
+    "activeTitle": "This is the version currently open in the Slides panel",
+    "open": "Open",
+    "openAria": "Open slides",
+    "switch": "Switch",
+    "switchAria": "Switch to this version",
+    "switchTitle": "Restore this deck version + reload the Slides panel",
+    "switchTitleLegacy": "This older card pre-dates per-turn version tracking",
+    "downloadPdf": "Download PDF",
+    "generateNotes": "Generate notes",
+    "editNotes": "Edit notes",
+    "generateNotesPrefill": "Generate speaker notes for this deck",
+    "editNotesPrefill": "Edit the speaker notes for this deck: ",
+    "edit": "Edit",
+    "editSlideAria": "Edit slide",
+    "editSlidePrefill": "Edit this slide: ",
+    "restoreFailed": "Failed to restore version"
+  },
+  "presenter": {
+    "elapsed": "elapsed time",
+    "audienceConnected": "audience connected",
+    "audienceClosed": "audience window closed",
+    "next": "next →",
+    "stop": "Stop",
+    "stopAria": "stop presenting"
+  },
+  "stage": {
+    "warmup": "Warming up the slide agent…",
+    "resolve": "Gathering the papers…",
+    "understand": "Studying the papers…",
+    "narrate": "Outlining the talk…",
+    "draft": "Drafting slide frames…",
+    "coherence": "Smoothing the flow…",
+    "figures": "Placing figures…",
+    "compile": "Compiling the deck (LaTeX)…",
+    "notes": "Finalizing…",
+    "building": "Building the deck…"
+  }
+}

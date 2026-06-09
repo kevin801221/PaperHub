@@ -1,0 +1,115 @@
+{
+  "restartBadge": "重新啟動以套用",
+  "restartPending": "重新啟動後端以套用：{{keys}}",
+  "replace": "更換",
+  "remove": "移除",
+  "add": "新增",
+  "setIndicator": "••• 已設定",
+  "notSet": "未設定",
+  "providerKeyPlaceholder": "PROVIDER_API_KEY",
+  "valuePlaceholder": "值",
+  "saveFailed": "無法儲存設定",
+  "loadFailed": "無法載入設定。",
+  "retry": "重試",
+  "advancedModels": "各任務模型覆寫",
+  "category": {
+    "models_providers": "模型與供應商",
+    "agents_memory": "代理與記憶",
+    "integrations": "整合服務",
+    "system": "系統"
+  },
+  "field": {
+    "PAPERHUB_MODEL_SMALL": {
+      "label": "小型層級模型",
+      "help": "分類器／快速工具呼叫的預設模型。"
+    },
+    "PAPERHUB_MODEL_FLAGSHIP": {
+      "label": "旗艦層級模型",
+      "help": "面向使用者的文字輸出預設模型。"
+    },
+    "PAPERHUB_ROUTER_MODEL": {
+      "label": "路由模型",
+      "help": "為每一輪挑選意圖（chitchat／paper_search／paper_qa／slides …）。預設使用小型層級。"
+    },
+    "PAPERHUB_CHITCHAT_MODEL": {
+      "label": "閒聊模型",
+      "help": "當路由選擇 chitchat 時的閒聊回覆。預設使用小型層級。"
+    },
+    "PAPERHUB_PAPER_QA_MODEL": {
+      "label": "paper_qa 統整器",
+      "help": "跨論文答案統整，串流給你。預設使用旗艦層級。"
+    },
+    "PAPERHUB_PAPER_QA_SUBAGENT_MODEL": {
+      "label": "paper_qa 子代理",
+      "help": "逐篇論文的章節導覽與片段挑選。預設使用小型層級。"
+    },
+    "PAPERHUB_SQL_AGENT_MODEL": {
+      "label": "SQL 規劃器",
+      "help": "library_stats 的 NL→SQL 規劃與自我修復。預設使用小型層級。"
+    },
+    "PAPERHUB_SQL_ANSWER_MODEL": {
+      "label": "SQL 回答",
+      "help": "library_stats 的自然語言回答措辭。預設使用旗艦層級。"
+    },
+    "PAPERHUB_MEMORY_CONFLICT_MODEL": {
+      "label": "記憶衝突偵測器",
+      "help": "檢查新記憶是否與既有記憶衝突。預設使用小型層級。"
+    },
+    "PAPERHUB_REPORT_RESOLVE_MODEL": {
+      "label": "投影片解析器",
+      "help": "解析已啟用的論文並分類投影片指令。預設使用小型層級。"
+    },
+    "PAPERHUB_REPORT_NOTES_MODEL": {
+      "label": "投影片講稿作者",
+      "help": "撰寫投影片的講者備忘稿。預設使用旗艦層級。"
+    },
+    "PAPERHUB_REPORT_PLAN_MODEL": {
+      "label": "投影片代理",
+      "help": "逐篇論文蒐集脈絡與投影片代理。預設使用旗艦層級。"
+    },
+    "PAPERHUB_REPORT_SECTION_MODEL": {
+      "label": "投影片單頁編輯",
+      "help": "單頁投影片／標題／前言編輯。預設使用旗艦層級。"
+    },
+    "PAPERHUB_PAPER_QA_MAX_SECTION_READS": {
+      "label": "每輪子代理最多章節讀取次數"
+    },
+    "PAPERHUB_SESSION_RETENTION_DAYS": {
+      "label": "軟刪除對話保留天數"
+    },
+    "PAPERHUB_MARKER_MAX_PAGES": {
+      "label": "每次 /extract 呼叫的 Marker 頁數"
+    },
+    "PAPERHUB_MEMORY_RECALL": {
+      "label": "注入回想的記憶",
+      "help": "向回答代理提供啟用中的記憶。"
+    },
+    "PAPERHUB_SEMANTIC_SCHOLAR_API_KEY": {
+      "label": "Semantic Scholar API 金鑰",
+      "help": "選填；未驗證層級有速率限制。"
+    },
+    "PAPERHUB_UNPAYWALL_EMAIL": {
+      "label": "Unpaywall 聯絡 Email",
+      "help": "啟用 DOI→免費 PDF 後援。僅用於濫用記錄。"
+    },
+    "PAPERHUB_MAX_UPLOAD_MB": {
+      "label": "PDF 上傳上限（MiB）"
+    },
+    "PAPERHUB_WORKSPACE": {
+      "label": "工作區目錄",
+      "help": "於開機時透過環境變數設定；變更後需重新啟動後端。"
+    },
+    "PAPERHUB_LOG_LEVEL": {
+      "label": "日誌層級"
+    },
+    "PAPERHUB_MARKER_URL": {
+      "label": "Marker 服務網址"
+    },
+    "PAPERHUB_INPROCESS_MARKER": {
+      "label": "進程內 Marker"
+    },
+    "PAPERHUB_SLIDE_STYLE_PROFILE": {
+      "label": "投影片樣式設定檔"
+    }
+  }
+}

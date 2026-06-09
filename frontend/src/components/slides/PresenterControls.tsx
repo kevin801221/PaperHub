@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Radio, Square } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 
@@ -35,6 +36,7 @@ export function PresenterControls({
   nextPreview,
   now = Date.now,
 }: Props) {
+  const { t } = useTranslation("slides");
   const [elapsed, setElapsed] = useState(() => now() - startedAt);
   useEffect(() => {
     const id = setInterval(() => setElapsed(now() - startedAt), 1000);
@@ -47,7 +49,7 @@ export function PresenterControls({
 
   return (
     <div className="flex items-center gap-3 border-b border-border bg-muted/40 px-3 py-1.5 text-xs">
-      <span className="font-medium tabular-nums" aria-label="elapsed time">
+      <span className="font-medium tabular-nums" aria-label={t("presenter.elapsed")}>
         {formatElapsed(elapsed)}
       </span>
       <span
@@ -58,11 +60,13 @@ export function PresenterControls({
         }
       >
         <Radio className="h-3 w-3" />
-        {audienceConnected ? "audience connected" : "audience window closed"}
+        {audienceConnected
+          ? t("presenter.audienceConnected")
+          : t("presenter.audienceClosed")}
       </span>
       {showPreview && (
         <span className="ml-auto flex items-center gap-1 text-muted-foreground">
-          next →
+          {t("presenter.next")}
           <span className="block w-16 overflow-hidden rounded border border-border">
             {nextPreview}
           </span>
@@ -74,10 +78,10 @@ export function PresenterControls({
         variant="ghost"
         className={showPreview ? "h-6 px-2 gap-1" : "ml-auto h-6 px-2 gap-1"}
         onClick={onStop}
-        aria-label="stop presenting"
+        aria-label={t("presenter.stopAria")}
       >
         <Square className="h-3 w-3" />
-        Stop
+        {t("presenter.stop")}
       </Button>
     </div>
   );

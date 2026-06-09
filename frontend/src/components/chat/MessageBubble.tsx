@@ -4,6 +4,7 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeKatex from "rehype-katex";
 import { Copy, RotateCcw, Undo2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 // KaTeX stylesheet — required for rehype-katex output to render correctly.
@@ -47,6 +48,8 @@ export function MessageBubble({
   onPrefill,
   onFork,
 }: Props) {
+  const { t } = useTranslation("chat");
+  const { t: tStates } = useTranslation("states");
   const isUser = message.role === "user";
   const isAssistant = message.role === "assistant";
   const isOk = message.status === "ok" || (isAssistant && message.status === undefined);
@@ -92,7 +95,7 @@ export function MessageBubble({
                   className="gap-2"
                 >
                   <RotateCcw className="h-3.5 w-3.5" />
-                  Retry
+                  {t("bubble.retry")}
                 </Button>
               )}
             </div>
@@ -101,7 +104,7 @@ export function MessageBubble({
           ) : isStreamingEmpty ? (
             // Pre-token waiting state — tight three-dot cluster so it reads
             // as a real "…" typing indicator, not stretched apart.
-            <LoadingDots ariaLabel="streaming" />
+            <LoadingDots ariaLabel={tStates("loading.streaming")} />
           ) : (
             // react-markdown renders to React elements (no dangerouslySetInnerHTML).
             // Raw HTML in source is not rendered as HTML by default — exactly what
@@ -168,11 +171,11 @@ export function MessageBubble({
                 size="icon"
                 variant="ghost"
                 className="h-6 w-6"
-                aria-label="Copy message"
+                aria-label={t("bubble.copy")}
                 onClick={() => {
                   navigator.clipboard.writeText(message.content).then(
-                    () => toast.success("Copied to clipboard"),
-                    () => toast.error("Copy failed"),
+                    () => toast.success(t("toast.copied")),
+                    () => toast.error(t("toast.copyFailed")),
                   );
                 }}
               >
@@ -185,8 +188,8 @@ export function MessageBubble({
                 size="icon"
                 variant="ghost"
                 className="h-6 w-6"
-                aria-label="Fork from this message"
-                title="Fork from here — branch a new chat and edit this message"
+                aria-label={t("bubble.fork")}
+                title={t("bubble.forkTitle")}
                 onClick={onFork}
               >
                 <Undo2 className="h-3.5 w-3.5" />

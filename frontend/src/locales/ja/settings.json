@@ -1,0 +1,115 @@
+{
+  "restartBadge": "再起動して適用",
+  "restartPending": "バックエンドを再起動して適用：{{keys}}",
+  "replace": "変更",
+  "remove": "削除",
+  "add": "追加",
+  "setIndicator": "••• 設定済み",
+  "notSet": "未設定",
+  "providerKeyPlaceholder": "PROVIDER_API_KEY",
+  "valuePlaceholder": "値",
+  "saveFailed": "設定を保存できませんでした",
+  "loadFailed": "設定を読み込めませんでした。",
+  "retry": "再試行",
+  "advancedModels": "スロット別モデル上書き",
+  "category": {
+    "models_providers": "モデルとプロバイダー",
+    "agents_memory": "エージェントとメモリ",
+    "integrations": "連携サービス",
+    "system": "システム"
+  },
+  "field": {
+    "PAPERHUB_MODEL_SMALL": {
+      "label": "小型ティアのモデル",
+      "help": "分類器／高速ツール呼び出しの既定。"
+    },
+    "PAPERHUB_MODEL_FLAGSHIP": {
+      "label": "フラッグシップティアのモデル",
+      "help": "ユーザー向け文章生成の既定。"
+    },
+    "PAPERHUB_ROUTER_MODEL": {
+      "label": "ルーターモデル",
+      "help": "各ターンの意図（chitchat／paper_search／paper_qa／slides …）を判定。既定は小型ティア。"
+    },
+    "PAPERHUB_CHITCHAT_MODEL": {
+      "label": "雑談モデル",
+      "help": "ルーターが chitchat を選んだ際の雑談応答。既定は小型ティア。"
+    },
+    "PAPERHUB_PAPER_QA_MODEL": {
+      "label": "paper_qa ファイナライザー",
+      "help": "論文横断の回答合成をストリーミング。既定はフラッグシップティア。"
+    },
+    "PAPERHUB_PAPER_QA_SUBAGENT_MODEL": {
+      "label": "paper_qa サブエージェント",
+      "help": "論文ごとのセクション探索とチャンク選択。既定は小型ティア。"
+    },
+    "PAPERHUB_SQL_AGENT_MODEL": {
+      "label": "SQL プランナー",
+      "help": "library_stats の NL→SQL 立案と自己修復。既定は小型ティア。"
+    },
+    "PAPERHUB_SQL_ANSWER_MODEL": {
+      "label": "SQL 回答",
+      "help": "library_stats の自然言語回答の言い回し。既定はフラッグシップティア。"
+    },
+    "PAPERHUB_MEMORY_CONFLICT_MODEL": {
+      "label": "メモリ競合検出",
+      "help": "新しいメモリが既存と矛盾しないか確認。既定は小型ティア。"
+    },
+    "PAPERHUB_REPORT_RESOLVE_MODEL": {
+      "label": "スライド解決器",
+      "help": "有効な論文を解決しデッキ命令を分類。既定は小型ティア。"
+    },
+    "PAPERHUB_REPORT_NOTES_MODEL": {
+      "label": "スライド発表者ノート作成",
+      "help": "デッキの発表者ノートを作成。既定はフラッグシップティア。"
+    },
+    "PAPERHUB_REPORT_PLAN_MODEL": {
+      "label": "スライドエージェント",
+      "help": "論文ごとのコンテキスト収集とスライドエージェント。既定はフラッグシップティア。"
+    },
+    "PAPERHUB_REPORT_SECTION_MODEL": {
+      "label": "スライド単一フレーム編集",
+      "help": "単一フレームのスライド／タイトル／プリアンブル編集。既定はフラッグシップティア。"
+    },
+    "PAPERHUB_PAPER_QA_MAX_SECTION_READS": {
+      "label": "サブエージェント1ターンあたりの最大セクション読取数"
+    },
+    "PAPERHUB_SESSION_RETENTION_DAYS": {
+      "label": "ソフト削除セッションの保持日数"
+    },
+    "PAPERHUB_MARKER_MAX_PAGES": {
+      "label": "/extract 呼び出しごとの Marker ページ数"
+    },
+    "PAPERHUB_MEMORY_RECALL": {
+      "label": "想起したメモリを注入",
+      "help": "回答エージェントに有効なメモリを提示。"
+    },
+    "PAPERHUB_SEMANTIC_SCHOLAR_API_KEY": {
+      "label": "Semantic Scholar API キー",
+      "help": "任意。未認証ティアはレート制限あり。"
+    },
+    "PAPERHUB_UNPAYWALL_EMAIL": {
+      "label": "Unpaywall 連絡先メール",
+      "help": "DOI→無料 PDF フォールバックを有効化。不正利用記録にのみ使用。"
+    },
+    "PAPERHUB_MAX_UPLOAD_MB": {
+      "label": "PDF アップロード上限（MiB）"
+    },
+    "PAPERHUB_WORKSPACE": {
+      "label": "ワークスペースディレクトリ",
+      "help": "起動時に環境変数で設定。変更にはバックエンドの再起動が必要。"
+    },
+    "PAPERHUB_LOG_LEVEL": {
+      "label": "ログレベル"
+    },
+    "PAPERHUB_MARKER_URL": {
+      "label": "Marker サービス URL"
+    },
+    "PAPERHUB_INPROCESS_MARKER": {
+      "label": "プロセス内 Marker"
+    },
+    "PAPERHUB_SLIDE_STYLE_PROFILE": {
+      "label": "スライドスタイルプロファイル"
+    }
+  }
+}

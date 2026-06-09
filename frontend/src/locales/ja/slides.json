@@ -1,0 +1,88 @@
+{
+  "panel": {
+    "title": "スライド",
+    "status": {
+      "ready": "準備完了",
+      "error": "エラー"
+    },
+    "nav": {
+      "previous": "前のスライド",
+      "next": "次のスライド",
+      "pageCounter": "{{current}} / {{total}}"
+    },
+    "present": {
+      "present": "発表",
+      "presenting": "発表中",
+      "openAudience": "観客ウィンドウを開く",
+      "presentingHint": "発表中——発表者バーから停止してください"
+    },
+    "download": {
+      "pdf": "PDF をダウンロード",
+      "latex": "LaTeX ソースをダウンロード",
+      "tex": ".tex"
+    },
+    "filmstrip": {
+      "resize": "サムネイル列の幅を調整",
+      "slide": "スライド {{n}}"
+    },
+    "mask": {
+      "updating": "スライドを更新中…",
+      "restoring": "バージョンを復元中…"
+    },
+    "note": {
+      "heading": "発表者ノート",
+      "cancel": "ノート編集をキャンセル",
+      "save": "発表者ノートを保存",
+      "edit": "発表者ノートを編集",
+      "field": "発表者ノート",
+      "empty": "このスライドには発表者ノートがありません"
+    }
+  },
+  "deckChip": {
+    "fallbackTitle": "スライド",
+    "slide_one": "{{count}} 枚のスライド",
+    "slide_other": "{{count}} 枚のスライド",
+    "status": {
+      "ready": "準備完了",
+      "error": "エラー"
+    },
+    "withNotes": "ノート付き",
+    "active": "使用中",
+    "activeTitle": "これは現在スライドパネルで開いているバージョンです",
+    "open": "開く",
+    "openAria": "スライドを開く",
+    "switch": "切り替え",
+    "switchAria": "このバージョンに切り替え",
+    "switchTitle": "このスライドバージョンを復元してスライドパネルを再読み込み",
+    "switchTitleLegacy": "この古いカードはターンごとのバージョン追跡より前のものです",
+    "downloadPdf": "PDF をダウンロード",
+    "generateNotes": "ノートを生成",
+    "editNotes": "ノートを編集",
+    "generateNotesPrefill": "このデッキの発表者ノートを生成",
+    "editNotesPrefill": "このデッキの発表者ノートを編集：",
+    "edit": "編集",
+    "editSlideAria": "スライドを編集",
+    "editSlidePrefill": "このスライドを編集：",
+    "restoreFailed": "バージョンの復元に失敗しました"
+  },
+  "presenter": {
+    "elapsed": "経過時間",
+    "audienceConnected": "観客が接続しました",
+    "audienceClosed": "観客ウィンドウが閉じています",
+    "next": "次へ →",
+    "stop": "停止",
+    "stopAria": "発表を停止"
+  },
+  "stage": {
+    "warmup": "スライドエージェントを起動中…",
+    "resolve": "論文を収集中…",
+    "understand": "論文を精読中…",
+    "narrate": "発表の構成を作成中…",
+    "draft": "スライドフレームを作成中…",
+    "coherence": "流れを整えています…",
+    "figures": "図を配置中…",
+    "compile": "デッキをコンパイル中（LaTeX）…",
+    "notes": "仕上げ中…",
+    "building": "デッキを構築中…"
+  }
+}

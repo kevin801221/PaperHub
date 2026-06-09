@@ -442,3 +442,64 @@ export async function fetchRunTrace(
     `/sessions/${sessionId}/runs/${runId}/trace`,
   );
 }
+
+// ── Settings (Plan G / FR-14) ────────────────────────────────────────────────
+
+export interface SettingsField {
+  key: string;
+  label: string;
+  type: "string" | "int" | "bool" | "email" | "enum" | "secret";
+  value?: string | null;
+  is_set?: boolean;
+  is_default?: boolean;
+  secret: boolean;
+  restart_required: boolean;
+  read_only?: boolean;
+  help?: string;
+  /** Seldom-configured (e.g. per-slot model overrides); shown under a
+   * collapsed disclosure in the modal rather than inline. */
+  advanced?: boolean;
+  choices?: string[];
+  min?: number;
+  max?: number;
+}
+
+export interface SettingsCredentials {
+  suggestions: string[];
+  keys: { key: string; is_set?: boolean }[];
+}
+
+export interface SettingsCategory {
+  key: string;
+  label: string;
+  credentials?: SettingsCredentials;
+  fields: SettingsField[];
+}
+
+export interface SettingsConfig {
+  categories: SettingsCategory[];
+}
+
+export interface SettingsPatchResult {
+  updated: string[];
+  cleared: string[];
+  restart_required: string[];
+}
+
+/** Fetch the full settings registry grouped by category. Secrets are masked
+ * (no `value` field; only `is_set`). */
+export async function getSettings(): Promise<SettingsConfig> {
+  return apiFetch<SettingsConfig>("/settings");
+}
+
+/** Apply a partial settings patch. Keys mapped to `null` clear the override
+ * (reverts to `.env` / built-in default). Returns which keys were updated,
+ * cleared, and which require a backend restart to take effect. */
+export async function patchSettings(
+  patch: Record<string, string | null>,
+): Promise<SettingsPatchResult> {
+  return apiFetch<SettingsPatchResult>("/settings", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}

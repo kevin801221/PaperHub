@@ -1,8 +1,9 @@
 import { useMemo } from "react";
 import { Presentation } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import type { ToolCallRecord } from "@/types/domain";
-import { slideStageLabel } from "@/lib/slideStage";
+import { slideStageKey } from "@/lib/slideStage";
 
 /**
  * In-flight indicator for the `slides` intent. Renders between the routing
@@ -12,7 +13,9 @@ import { slideStageLabel } from "@/lib/slideStage";
  * during a draft fan-out or a pdflatex compile doesn't read as a stall.
  */
 export function SlideProgressCard({ trace }: { trace?: ToolCallRecord[] }) {
-  const stage = useMemo(() => slideStageLabel(trace), [trace]);
+  const { t } = useTranslation("chat");
+  const { t: ts } = useTranslation("slides");
+  const stage = useMemo(() => ts(slideStageKey(trace)), [ts, trace]);
   const steps = trace?.length ?? 0;
   // During the draft fan-out, count drafted frames — it's the most legible
   // progress signal (one step per slide). Otherwise show the total step count.
@@ -53,22 +56,22 @@ export function SlideProgressCard({ trace }: { trace?: ToolCallRecord[] }) {
           <div className="flex items-center gap-1.5">
             <Presentation className="h-3.5 w-3.5 text-muted-foreground" />
             <span className="text-sm font-medium text-foreground">
-              Building your slide deck
+              {t("slideCard.title")}
             </span>
           </div>
           <p className="mt-0.5 truncate text-xs text-muted-foreground">{stage}</p>
           <p className="mt-1 text-[11px] leading-tight text-muted-foreground/70">
-            Building slides — drafting and compiling can take a few minutes.
+            {t("slideCard.hint")}
             {inDraft && draftCount > 0 ? (
               <>
                 {" · "}
-                {draftCount} slide{draftCount === 1 ? "" : "s"} drafted so far
+                {t("slideCard.drafted", { count: draftCount })}
               </>
             ) : (
               steps > 0 && (
                 <>
                   {" · "}
-                  {steps} step{steps === 1 ? "" : "s"} so far
+                  {t("slideCard.step", { count: steps })}
                 </>
               )
             )}

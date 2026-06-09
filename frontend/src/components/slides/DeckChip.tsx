@@ -7,6 +7,7 @@ import {
   Presentation,
 } from "lucide-react";
 import { toast } from "sonner";
+import { useTranslation } from "react-i18next";
 
 import type { DeckEventData } from "@/types/domain";
 import { useSlidesStore } from "@/store/slides";
@@ -41,6 +42,7 @@ interface Props {
  * spacing.
  */
 export function DeckChip({ deck, onPrefill }: Props) {
+  const { t } = useTranslation("slides");
   const openPanel = useSlidesStore((s) => s.openPanel);
   const setCurrentPage = useSlidesStore((s) => s.setCurrentPage);
   const setDeck = useSlidesStore((s) => s.setDeck);
@@ -100,7 +102,7 @@ export function DeckChip({ deck, onPrefill }: Props) {
         title:
           (meta.plan as { title?: string } | null)?.title ??
           deck.title ??
-          "Slides",
+          t("deckChip.fallbackTitle"),
         status: meta.status,
         contributing_papers: [],
         has_notes: Object.keys(meta.speaker_notes).length > 0,
@@ -113,7 +115,7 @@ export function DeckChip({ deck, onPrefill }: Props) {
       openPanel();
     } catch (err) {
       console.error("Failed to restore deck version", err);
-      toast.error("Failed to restore version");
+      toast.error(t("deckChip.restoreFailed"));
     } finally {
       setRestoring(false);
       setStoreRestoring(deck.session_id, false);
@@ -127,6 +129,7 @@ export function DeckChip({ deck, onPrefill }: Props) {
     setCurrentPage,
     setStoreRestoring,
     openPanel,
+    t,
   ]);
 
   return (
@@ -141,24 +144,25 @@ export function DeckChip({ deck, onPrefill }: Props) {
             {deck.title}
           </p>
           <div className="flex items-center gap-2 mt-0.5 text-xs text-muted-foreground">
-            <span>
-              {deck.page_count} slide{deck.page_count !== 1 ? "s" : ""}
-            </span>
+            <span>{t("deckChip.slide", { count: deck.page_count })}</span>
             {/* Status indicator */}
             {deck.status === "ok" ? (
-              <span className="text-green-600 dark:text-green-400">ready</span>
+              <span className="text-green-600 dark:text-green-400">
+                {t("deckChip.status.ready")}
+              </span>
             ) : deck.status === "error" ? (
-              <span className="text-destructive">error</span>
+              <span className="text-destructive">
+                {t("deckChip.status.error")}
+              </span>
             ) : null}
             {deck.has_notes && (
-              <span className="text-muted-foreground">with notes</span>
+              <span className="text-muted-foreground">
+                {t("deckChip.withNotes")}
+              </span>
             )}
             {isActiveVersion && (
-              <span
-                className="text-primary"
-                title="This is the version currently open in the Slides panel"
-              >
-                active
+              <span className="text-primary" title={t("deckChip.activeTitle")}>
+                {t("deckChip.active")}
               </span>
             )}
           </div>
@@ -173,10 +177,10 @@ export function DeckChip({ deck, onPrefill }: Props) {
               variant="outline"
               onClick={handleOpen}
               className="h-7 px-2 text-xs gap-1"
-              aria-label="Open slides"
+              aria-label={t("deckChip.openAria")}
             >
               <ExternalLink className="h-3 w-3" />
-              Open
+              {t("deckChip.open")}
             </Button>
           ) : (
             <Button
@@ -186,11 +190,11 @@ export function DeckChip({ deck, onPrefill }: Props) {
               onClick={() => void handleSwitch()}
               disabled={!deck.version_id || restoring}
               className="h-7 px-2 text-xs gap-1"
-              aria-label="Switch to this version"
+              aria-label={t("deckChip.switchAria")}
               title={
                 deck.version_id
-                  ? "Restore this deck version + reload the Slides panel"
-                  : "This older card pre-dates per-turn version tracking"
+                  ? t("deckChip.switchTitle")
+                  : t("deckChip.switchTitleLegacy")
               }
             >
               {restoring ? (
@@ -198,7 +202,7 @@ export function DeckChip({ deck, onPrefill }: Props) {
               ) : (
                 <History className="h-3 w-3" />
               )}
-              Switch
+              {t("deckChip.switch")}
             </Button>
           )}
           <a
@@ -207,7 +211,7 @@ export function DeckChip({ deck, onPrefill }: Props) {
               isActiveVersion ? null : (deck.version_id ?? null),
             )}
             download
-            aria-label="Download PDF"
+            aria-label={t("deckChip.downloadPdf")}
             className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-input bg-background text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
             <Download className="h-3 w-3" />
@@ -222,23 +226,29 @@ export function DeckChip({ deck, onPrefill }: Props) {
                 onClick={() =>
                   onPrefill(
                     deck.has_notes
-                      ? "Edit the speaker notes for this deck: "
-                      : "Generate speaker notes for this deck",
+                      ? t("deckChip.editNotesPrefill")
+                      : t("deckChip.generateNotesPrefill"),
                   )
                 }
-                aria-label={deck.has_notes ? "Edit notes" : "Generate notes"}
+                aria-label={
+                  deck.has_notes
+                    ? t("deckChip.editNotes")
+                    : t("deckChip.generateNotes")
+                }
               >
-                {deck.has_notes ? "Edit notes" : "Generate notes"}
+                {deck.has_notes
+                  ? t("deckChip.editNotes")
+                  : t("deckChip.generateNotes")}
               </Button>
               <Button
                 type="button"
                 size="sm"
                 variant="ghost"
                 className="h-7 px-2 text-xs"
-                onClick={() => onPrefill("Edit this slide: ")}
-                aria-label="Edit slide"
+                onClick={() => onPrefill(t("deckChip.editSlidePrefill"))}
+                aria-label={t("deckChip.editSlideAria")}
               >
-                Edit
+                {t("deckChip.edit")}
               </Button>
             </>
           )}

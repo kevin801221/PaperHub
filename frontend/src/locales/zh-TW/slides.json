@@ -1,0 +1,88 @@
+{
+  "panel": {
+    "title": "投影片",
+    "status": {
+      "ready": "就緒",
+      "error": "錯誤"
+    },
+    "nav": {
+      "previous": "上一張投影片",
+      "next": "下一張投影片",
+      "pageCounter": "{{current}} / {{total}}"
+    },
+    "present": {
+      "present": "演示",
+      "presenting": "演示中",
+      "openAudience": "開啟觀眾視窗",
+      "presentingHint": "演示中——請從演示者列停止"
+    },
+    "download": {
+      "pdf": "下載 PDF",
+      "latex": "下載 LaTeX 原始碼",
+      "tex": ".tex"
+    },
+    "filmstrip": {
+      "resize": "調整縮圖列寬度",
+      "slide": "第 {{n}} 張投影片"
+    },
+    "mask": {
+      "updating": "更新投影片中…",
+      "restoring": "還原版本中…"
+    },
+    "note": {
+      "heading": "演講備註",
+      "cancel": "取消編輯備註",
+      "save": "儲存演講備註",
+      "edit": "編輯演講備註",
+      "field": "演講備註",
+      "empty": "此投影片沒有演講備註"
+    }
+  },
+  "deckChip": {
+    "fallbackTitle": "投影片",
+    "slide_one": "{{count}} 張投影片",
+    "slide_other": "{{count}} 張投影片",
+    "status": {
+      "ready": "就緒",
+      "error": "錯誤"
+    },
+    "withNotes": "含備註",
+    "active": "使用中",
+    "activeTitle": "這是目前在投影片面板開啟的版本",
+    "open": "開啟",
+    "openAria": "開啟投影片",
+    "switch": "切換",
+    "switchAria": "切換至此版本",
+    "switchTitle": "還原此投影片版本並重新載入投影片面板",
+    "switchTitleLegacy": "這張較舊的卡片早於逐回合版本追蹤功能",
+    "downloadPdf": "下載 PDF",
+    "generateNotes": "產生備註",
+    "editNotes": "編輯備註",
+    "generateNotesPrefill": "為這份投影片產生演講備註",
+    "editNotesPrefill": "編輯這份投影片的演講備註：",
+    "edit": "編輯",
+    "editSlideAria": "編輯投影片",
+    "editSlidePrefill": "編輯這張投影片：",
+    "restoreFailed": "還原版本失敗"
+  },
+  "presenter": {
+    "elapsed": "經過時間",
+    "audienceConnected": "觀眾已連線",
+    "audienceClosed": "觀眾視窗已關閉",
+    "next": "下一張 →",
+    "stop": "停止",
+    "stopAria": "停止演示"
+  },
+  "stage": {
+    "warmup": "正在啟動投影片代理…",
+    "resolve": "正在收集論文…",
+    "understand": "正在研讀論文…",
+    "narrate": "正在規劃演講大綱…",
+    "draft": "正在草擬投影片框架…",
+    "coherence": "正在順稿…",
+    "figures": "正在放置圖表…",
+    "compile": "正在編譯投影片（LaTeX）…",
+    "notes": "正在收尾…",
+    "building": "正在建立投影片…"
+  }
+}
