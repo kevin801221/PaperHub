@@ -18,6 +18,8 @@ Multi-agent tool routing · in-repo RAG knowledge base · agentic per-paper retr
 ![Status](https://img.shields.io/badge/release-v2.31.0%20(SRS%20v2.31)-success)
 ![License](https://img.shields.io/badge/license-Apache%202.0-blue)
 
+**English** · [日本語](README.ja.md) · [繁體中文](README.zh-TW.md) · [简体中文](README.zh-CN.md)
+
 </div>
 
 ---
