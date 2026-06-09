@@ -123,7 +123,8 @@ SETTINGS_REGISTRY: list[SettingField] = [
     SettingField("PAPERHUB_SESSION_RETENTION_DAYS", "agents_memory",
                  "Soft-deleted session retention (days)", "int", default="30", min=1, max=3650),
     SettingField("PAPERHUB_MARKER_MAX_PAGES", "integrations",
-                 "Marker pages per /extract call", "int", default="1", min=1, max=100),
+                 "Marker pages per /extract call", "int", default="1", min=1, max=100,
+                 restart_required=True),
     # ── Memory / recall ─────────────────────────────────────────────────
     SettingField("PAPERHUB_MEMORY_RECALL", "agents_memory", "Inject recalled memories", "bool",
                  default="1", help="Surface active memories to answering agents."),
