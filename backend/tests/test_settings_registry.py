@@ -13,15 +13,10 @@ from paperhub.settings_registry import (
 def test_registry_covers_known_categories() -> None:
     categories = {f.category for f in SETTINGS_REGISTRY}
     assert {
-        "llm_models",
-        "agent_tunables",
-        "memory",
-        "external_services",
-        "external_lookup",
-        "storage",
-        "logging",
-        "marker",
-        "slides",
+        "models_providers",
+        "agents_memory",
+        "integrations",
+        "system",
     } <= categories
 
 
@@ -88,6 +83,6 @@ def test_paperhub_prefixed_keys_are_not_credentials() -> None:
 
 
 def test_every_registry_category_has_a_nav_slot() -> None:
-    cats = {f.category for f in SETTINGS_REGISTRY} | {"provider_credentials"}
+    cats = {f.category for f in SETTINGS_REGISTRY}
     assert cats == set(_CATEGORY_ORDER)
     assert cats == set(_CATEGORY_LABELS)

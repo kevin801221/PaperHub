@@ -28,6 +28,9 @@ class SettingField:
     secret: bool = False
     restart_required: bool = False
     read_only: bool = False
+    # Seldom-configured fields (e.g. per-slot model overrides) the UI tucks
+    # under a collapsed "advanced" disclosure instead of showing inline.
+    advanced: bool = False
     min: int | None = None
     max: int | None = None
     choices: tuple[str, ...] = ()
@@ -76,56 +79,78 @@ _FLAGSHIP = "gemini/gemini-2.5-pro"
 
 SETTINGS_REGISTRY: list[SettingField] = [
     # ── LLM model selection ─────────────────────────────────────────────
-    SettingField("PAPERHUB_MODEL_SMALL", "llm_models", "Small-tier model", "string",
+    SettingField("PAPERHUB_MODEL_SMALL", "models_providers", "Small-tier model", "string",
                  default=_SMALL, help="Default for classifiers / fast tool calls."),
-    SettingField("PAPERHUB_MODEL_FLAGSHIP", "llm_models", "Flagship-tier model", "string",
+    SettingField("PAPERHUB_MODEL_FLAGSHIP", "models_providers", "Flagship-tier model", "string",
                  default=_FLAGSHIP, help="Default for user-facing prose."),
-    SettingField("PAPERHUB_ROUTER_MODEL", "llm_models", "Router model", "string",
-                 help="Intent classifier. Defaults to the small tier."),
-    SettingField("PAPERHUB_CHITCHAT_MODEL", "llm_models", "Chitchat model", "string"),
-    SettingField("PAPERHUB_PAPER_QA_MODEL", "llm_models", "paper_qa finalizer", "string"),
-    SettingField("PAPERHUB_PAPER_QA_SUBAGENT_MODEL", "llm_models", "paper_qa subagent", "string"),
-    SettingField("PAPERHUB_SQL_AGENT_MODEL", "llm_models", "SQL planner", "string"),
-    SettingField("PAPERHUB_SQL_ANSWER_MODEL", "llm_models", "SQL answer", "string"),
-    SettingField("PAPERHUB_MEMORY_CONFLICT_MODEL", "llm_models", "Memory conflict detector", "string"),
-    SettingField("PAPERHUB_REPORT_RESOLVE_MODEL", "llm_models", "Slide resolver", "string"),
-    SettingField("PAPERHUB_REPORT_NOTES_MODEL", "llm_models", "Slide notes author", "string"),
-    SettingField("PAPERHUB_REPORT_PLAN_MODEL", "llm_models", "Slide agent", "string"),
-    SettingField("PAPERHUB_REPORT_SECTION_MODEL", "llm_models", "Slide single-frame edit", "string"),
+    # Per-slot overrides (advanced; default to one of the two tiers above).
+    SettingField("PAPERHUB_ROUTER_MODEL", "models_providers", "Router model", "string",
+                 advanced=True,
+                 help="Picks the intent for each turn (chitchat / paper_search / paper_qa / slides …). Defaults to the small tier."),
+    SettingField("PAPERHUB_CHITCHAT_MODEL", "models_providers", "Chitchat model", "string",
+                 advanced=True,
+                 help="Small-talk replies when the router picks chitchat. Defaults to the small tier."),
+    SettingField("PAPERHUB_PAPER_QA_MODEL", "models_providers", "paper_qa finalizer", "string",
+                 advanced=True,
+                 help="Cross-paper answer synthesis, streamed to you. Defaults to the flagship tier."),
+    SettingField("PAPERHUB_PAPER_QA_SUBAGENT_MODEL", "models_providers", "paper_qa subagent", "string",
+                 advanced=True,
+                 help="Per-paper section navigation + chunk selection. Defaults to the small tier."),
+    SettingField("PAPERHUB_SQL_AGENT_MODEL", "models_providers", "SQL planner", "string",
+                 advanced=True,
+                 help="library_stats NL→SQL planning + self-repair. Defaults to the small tier."),
+    SettingField("PAPERHUB_SQL_ANSWER_MODEL", "models_providers", "SQL answer", "string",
+                 advanced=True,
+                 help="library_stats natural-language answer phrasing. Defaults to the flagship tier."),
+    SettingField("PAPERHUB_MEMORY_CONFLICT_MODEL", "models_providers", "Memory conflict detector", "string",
+                 advanced=True,
+                 help="Checks whether a new memory contradicts an existing one. Defaults to the small tier."),
+    SettingField("PAPERHUB_REPORT_RESOLVE_MODEL", "models_providers", "Slide resolver", "string",
+                 advanced=True,
+                 help="Resolves enabled papers + classifies deck commands. Defaults to the small tier."),
+    SettingField("PAPERHUB_REPORT_NOTES_MODEL", "models_providers", "Slide notes author", "string",
+                 advanced=True,
+                 help="Writes the deck's speaker notes. Defaults to the flagship tier."),
+    SettingField("PAPERHUB_REPORT_PLAN_MODEL", "models_providers", "Slide agent", "string",
+                 advanced=True,
+                 help="Per-paper gather-context + the slide agent. Defaults to the flagship tier."),
+    SettingField("PAPERHUB_REPORT_SECTION_MODEL", "models_providers", "Slide single-frame edit", "string",
+                 advanced=True,
+                 help="Single-frame slide / title / preamble edits. Defaults to the flagship tier."),
     # ── Agent tunables ──────────────────────────────────────────────────
-    SettingField("PAPERHUB_PAPER_QA_MAX_SECTION_READS", "agent_tunables",
+    SettingField("PAPERHUB_PAPER_QA_MAX_SECTION_READS", "agents_memory",
                  "Max section reads / subagent turn", "int", default="8", min=1, max=50),
-    SettingField("PAPERHUB_SESSION_RETENTION_DAYS", "agent_tunables",
+    SettingField("PAPERHUB_SESSION_RETENTION_DAYS", "agents_memory",
                  "Soft-deleted session retention (days)", "int", default="30", min=1, max=3650),
-    SettingField("PAPERHUB_MARKER_MAX_PAGES", "marker",
+    SettingField("PAPERHUB_MARKER_MAX_PAGES", "integrations",
                  "Marker pages per /extract call", "int", default="1", min=1, max=100),
     # ── Memory / recall ─────────────────────────────────────────────────
-    SettingField("PAPERHUB_MEMORY_RECALL", "memory", "Inject recalled memories", "bool",
+    SettingField("PAPERHUB_MEMORY_RECALL", "agents_memory", "Inject recalled memories", "bool",
                  default="1", help="Surface active memories to answering agents."),
     # NOTE: PAPERHUB_MEMORY_SEMANTIC is intentionally OMITTED — dead config.
     # ── External services ───────────────────────────────────────────────
-    SettingField("PAPERHUB_SEMANTIC_SCHOLAR_API_KEY", "external_services",
+    SettingField("PAPERHUB_SEMANTIC_SCHOLAR_API_KEY", "integrations",
                  "Semantic Scholar API key", "secret", secret=True,
                  help="Optional; the unauthenticated tier is rate-limited."),
     # ── External lookup ─────────────────────────────────────────────────
-    SettingField("PAPERHUB_UNPAYWALL_EMAIL", "external_lookup", "Unpaywall contact email", "email",
+    SettingField("PAPERHUB_UNPAYWALL_EMAIL", "integrations", "Unpaywall contact email", "email",
                  help="Enables the DOI→free-PDF fallback. Used for abuse logging only."),
     # ── Storage ─────────────────────────────────────────────────────────
-    SettingField("PAPERHUB_MAX_UPLOAD_MB", "storage", "Max PDF upload (MiB)", "int",
+    SettingField("PAPERHUB_MAX_UPLOAD_MB", "system", "Max PDF upload (MiB)", "int",
                  default="30", min=1, max=500),
-    SettingField("PAPERHUB_WORKSPACE", "storage", "Workspace directory", "string",
+    SettingField("PAPERHUB_WORKSPACE", "system", "Workspace directory", "string",
                  default="./workspace", restart_required=True, read_only=True,
                  help="Set via env var at boot; restart the backend to change."),
     # ── Logging ─────────────────────────────────────────────────────────
-    SettingField("PAPERHUB_LOG_LEVEL", "logging", "Log level", "enum", default="INFO",
+    SettingField("PAPERHUB_LOG_LEVEL", "system", "Log level", "enum", default="INFO",
                  restart_required=True, choices=("DEBUG", "INFO", "WARNING", "ERROR")),
     # ── Marker ──────────────────────────────────────────────────────────
-    SettingField("PAPERHUB_MARKER_URL", "marker", "Marker service URL", "string",
+    SettingField("PAPERHUB_MARKER_URL", "integrations", "Marker service URL", "string",
                  default="http://127.0.0.1:8002", restart_required=True),
-    SettingField("PAPERHUB_INPROCESS_MARKER", "marker", "In-process Marker", "bool",
+    SettingField("PAPERHUB_INPROCESS_MARKER", "integrations", "In-process Marker", "bool",
                  default="0", restart_required=True),
     # ── Slides ──────────────────────────────────────────────────────────
-    SettingField("PAPERHUB_SLIDE_STYLE_PROFILE", "slides", "Slide style profile", "enum",
+    SettingField("PAPERHUB_SLIDE_STYLE_PROFILE", "system", "Slide style profile", "enum",
                  default="default", choices=("default", "metropolis_minimal")),
 ]
 

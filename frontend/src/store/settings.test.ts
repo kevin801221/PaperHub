@@ -8,7 +8,7 @@ import { useSettingsStore } from "./settings";
 
 const server = setupServer(
   http.get(`${API_BASE_URL}/settings`, () =>
-    HttpResponse.json({ categories: [{ key: "logging", label: "Logging", free_form: false, suggestions: [], fields: [] }] }),
+    HttpResponse.json({ categories: [{ key: "system", label: "System", fields: [] }] }),
   ),
 );
 
@@ -21,7 +21,7 @@ describe("settings store", () => {
     expect(useSettingsStore.getState().isOpen).toBe(true);
     await useSettingsStore.getState().fetchConfig();
     const firstCat = useSettingsStore.getState().config?.categories[0];
-    expect(firstCat?.key).toBe("logging");
+    expect(firstCat?.key).toBe("system");
     useSettingsStore.getState().close();
     expect(useSettingsStore.getState().isOpen).toBe(false);
   });

@@ -21,22 +21,15 @@ from paperhub.settings_registry import (
 router = APIRouter(prefix="/settings", tags=["settings"])
 
 _CATEGORY_LABELS = {
-    "provider_credentials": "Provider credentials",
-    "llm_models": "LLM models",
-    "agent_tunables": "Agent tunables",
-    "memory": "Memory / recall",
-    "external_services": "External services",
-    "external_lookup": "External lookup",
-    "storage": "Workspace / storage",
-    "logging": "Logging",
-    "marker": "Marker",
-    "slides": "Slide style",
+    "models_providers": "Models & providers",
+    "agents_memory": "Agents & memory",
+    "integrations": "Integrations",
+    "system": "System",
 }
 
 # Order categories deterministically for the modal's left-nav.
 _CATEGORY_ORDER = [
-    "provider_credentials", "llm_models", "agent_tunables", "memory",
-    "external_services", "external_lookup", "storage", "logging", "marker", "slides",
+    "models_providers", "agents_memory", "integrations", "system",
 ]
 
 
@@ -54,14 +47,14 @@ async def get_settings() -> dict[str, Any]:
 
     cats: dict[str, list[dict[str, Any]]] = {k: [] for k in _CATEGORY_ORDER}
 
-    # Free-form provider credentials: every DB row that is an allowed credential
-    # key (and not a structured registry field). Values are NEVER returned.
-    for key in sorted(rows):
-        if field_by_key(key) is None and is_allowed_credential_key(key):
-            cats["provider_credentials"].append(
-                {"key": key, "label": key, "type": "secret",
-                 "secret": True, "is_set": True, "restart_required": False}
-            )
+    # Provider credentials ride on the models_providers category as a dedicated
+    # sub-section: every DB row that is an allowed credential key (and not a
+    # structured registry field). Values are NEVER returned.
+    credential_keys = [
+        {"key": key, "is_set": True}
+        for key in sorted(rows)
+        if field_by_key(key) is None and is_allowed_credential_key(key)
+    ]
 
     # Structured fields from the registry.
     for f in SETTINGS_REGISTRY:
@@ -69,7 +62,7 @@ async def get_settings() -> dict[str, Any]:
         item: dict[str, Any] = {
             "key": f.key, "label": f.label, "type": f.type,
             "secret": f.secret, "restart_required": f.restart_required,
-            "read_only": f.read_only, "help": f.help,
+            "read_only": f.read_only, "help": f.help, "advanced": f.advanced,
             "is_default": f.key not in rows,
         }
         if f.choices:
@@ -84,19 +77,18 @@ async def get_settings() -> dict[str, Any]:
             item["value"] = effective
         cats[f.category].append(item)
 
-    return {
-        "categories": [
-            {
-                "key": c,
-                "label": _CATEGORY_LABELS[c],
-                "free_form": c == "provider_credentials",
-                "suggestions": list(PROVIDER_CREDENTIAL_SUGGESTIONS)
-                if c == "provider_credentials" else [],
-                "fields": cats[c],
+    categories: list[dict[str, Any]] = []
+    for c in _CATEGORY_ORDER:
+        entry: dict[str, Any] = {"key": c, "label": _CATEGORY_LABELS[c]}
+        if c == "models_providers":
+            entry["credentials"] = {
+                "suggestions": list(PROVIDER_CREDENTIAL_SUGGESTIONS),
+                "keys": credential_keys,
             }
-            for c in _CATEGORY_ORDER
-        ]
-    }
+        entry["fields"] = cats[c]
+        categories.append(entry)
+
+    return {"categories": categories}
 
 
 @router.patch("")

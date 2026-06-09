@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
-import type { SettingsField } from "../../lib/api";
+import type { SettingsCredentials, SettingsField } from "../../lib/api";
 import { useSettingsStore } from "../../store/settings";
 import { Button } from "../ui/button";
 import { Select } from "../ui/select";
@@ -54,7 +54,7 @@ export function SettingsModal() {
                 c.key === effectiveCat ? "bg-muted font-medium" : "hover:bg-muted/60"
               }`}
             >
-              {c.label}
+              {t(`settings:category.${c.key}`, c.label)}
             </button>
           ))}
         </nav>
@@ -79,16 +79,29 @@ export function SettingsModal() {
             </div>
           )}
           <div className="flex-1 overflow-y-auto p-3">
-            {current?.free_form ? (
-              <CredentialEditor
-                suggestions={current.suggestions}
-                fields={current.fields}
-                onSave={save}
-              />
-            ) : (
-              current?.fields.map((f) => (
+            {current?.credentials && (
+              <div className="mb-6">
+                <CredentialEditor credentials={current.credentials} onSave={save} />
+              </div>
+            )}
+            {current?.fields
+              .filter((f) => !f.advanced)
+              .map((f) => (
                 <FieldRow key={`${f.key}:${f.value ?? ""}`} field={f} onSave={save} />
-              ))
+              ))}
+            {current?.fields.some((f) => f.advanced) && (
+              <details className="mt-2 rounded-md border border-border">
+                <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium text-muted-foreground">
+                  {t("settings:advancedModels", "Per-slot model overrides")}
+                </summary>
+                <div className="border-t border-border p-3 pb-0">
+                  {current.fields
+                    .filter((f) => f.advanced)
+                    .map((f) => (
+                      <FieldRow key={`${f.key}:${f.value ?? ""}`} field={f} onSave={save} />
+                    ))}
+                </div>
+              </details>
             )}
           </div>
         </div>
@@ -110,11 +123,15 @@ function FieldRow({
   const [draft, setDraft] = useState<string>(field.value ?? "");
   const [replacing, setReplacing] = useState(false);
 
+  // Localize label/help by key; the backend-provided English is the fallback.
+  const label = t(`settings:field.${field.key}.label`, field.label);
+  const helpText = t(`settings:field.${field.key}.help`, field.help ?? "");
+
   if (field.read_only) {
     return (
       <div className="mb-4">
         <label htmlFor={field.key} className="text-sm font-medium">
-          {field.label}
+          {label}
         </label>
         <input
           id={field.key}
@@ -122,7 +139,7 @@ function FieldRow({
           value={field.value ?? ""}
           className="mt-1 w-full rounded border bg-muted px-2 py-1 text-sm"
         />
-        {field.help && <p className="mt-1 text-xs text-muted-foreground">{field.help}</p>}
+        {helpText && <p className="mt-1 text-xs text-muted-foreground">{helpText}</p>}
       </div>
     );
   }
@@ -131,7 +148,7 @@ function FieldRow({
     return (
       <div className="mb-4">
         <label htmlFor={field.key} className="text-sm font-medium">
-          {field.label} {field.restart_required && <RestartBadge />}
+          {label} {field.restart_required && <RestartBadge />}
         </label>
         {replacing ? (
           <div className="mt-1 flex gap-2">
@@ -175,7 +192,7 @@ function FieldRow({
             </Button>
           </div>
         )}
-        {field.help && <p className="mt-1 text-xs text-muted-foreground">{field.help}</p>}
+        {helpText && <p className="mt-1 text-xs text-muted-foreground">{helpText}</p>}
       </div>
     );
   }
@@ -186,9 +203,9 @@ function FieldRow({
       <div className="mb-4 flex items-center justify-between gap-3">
         <div className="min-w-0">
           <label htmlFor={field.key} className="text-sm font-medium">
-            {field.label} {field.restart_required && <RestartBadge />}
+            {label} {field.restart_required && <RestartBadge />}
           </label>
-          {field.help && <p className="mt-1 text-xs text-muted-foreground">{field.help}</p>}
+          {helpText && <p className="mt-1 text-xs text-muted-foreground">{helpText}</p>}
         </div>
         <Switch
           id={field.key}
@@ -209,7 +226,7 @@ function FieldRow({
   return (
     <div className="mb-4">
       <label htmlFor={field.key} className="text-sm font-medium">
-        {field.label} {field.restart_required && <RestartBadge />}
+        {label} {field.restart_required && <RestartBadge />}
       </label>
       <div className="mt-1 flex gap-2">
         {field.type === "enum" ? (
@@ -244,7 +261,7 @@ function FieldRow({
           <Check />
         </Button>
       </div>
-      {field.help && <p className="mt-1 text-xs text-muted-foreground">{field.help}</p>}
+      {helpText && <p className="mt-1 text-xs text-muted-foreground">{helpText}</p>}
     </div>
   );
 }
@@ -259,12 +276,10 @@ function RestartBadge() {
 }
 
 function CredentialEditor({
-  suggestions,
-  fields,
+  credentials,
   onSave,
 }: {
-  suggestions: string[];
-  fields: SettingsField[];
+  credentials: SettingsCredentials;
   onSave: (patch: Record<string, string | null>) => Promise<void>;
 }) {
   const { t } = useTranslation(["settings", "common"]);
@@ -273,12 +288,12 @@ function CredentialEditor({
   return (
     <div>
       <ul className="mb-4 space-y-1">
-        {fields.map((f) => (
+        {credentials.keys.map((k) => (
           <li
-            key={f.key}
+            key={k.key}
             className="flex items-center justify-between rounded-md border border-border px-2 py-1 text-sm"
           >
-            <span className="truncate font-mono">{f.key}</span>
+            <span className="truncate font-mono">{k.key}</span>
             <Button
               variant="ghost"
               size="icon-xs"
@@ -286,7 +301,7 @@ function CredentialEditor({
               title={t("remove", "Remove")}
               className="text-destructive hover:text-destructive"
               onClick={() =>
-                void onSave({ [f.key]: null }).catch((e: unknown) =>
+                void onSave({ [k.key]: null }).catch((e: unknown) =>
                   toast.error(
                     e instanceof Error ? e.message : t("settings:saveFailed", "Couldn't save the setting"),
                   ),
@@ -308,7 +323,7 @@ function CredentialEditor({
           className="h-8 w-1/2 rounded-md border border-border bg-background px-2.5 font-mono text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50"
         />
         <datalist id="cred-suggestions">
-          {suggestions.map((s) => (
+          {credentials.suggestions.map((s) => (
             <option key={s} value={s} />
           ))}
         </datalist>

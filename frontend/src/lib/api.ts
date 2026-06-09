@@ -456,16 +456,23 @@ export interface SettingsField {
   restart_required: boolean;
   read_only?: boolean;
   help?: string;
+  /** Seldom-configured (e.g. per-slot model overrides); shown under a
+   * collapsed disclosure in the modal rather than inline. */
+  advanced?: boolean;
   choices?: string[];
   min?: number;
   max?: number;
 }
 
+export interface SettingsCredentials {
+  suggestions: string[];
+  keys: { key: string; is_set?: boolean }[];
+}
+
 export interface SettingsCategory {
   key: string;
   label: string;
-  free_form: boolean;
-  suggestions: string[];
+  credentials?: SettingsCredentials;
   fields: SettingsField[];
 }
 

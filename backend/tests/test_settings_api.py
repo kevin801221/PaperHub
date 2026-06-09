@@ -36,7 +36,7 @@ async def test_get_settings_returns_categories(settings_client: AsyncClient) -> 
     assert resp.status_code == 200
     body = resp.json()
     cats = {c["key"] for c in body["categories"]}
-    assert {"provider_credentials", "llm_models", "logging"} <= cats
+    assert {"models_providers", "agents_memory", "integrations", "system"} <= cats
 
 
 async def test_get_settings_masks_secret_value(settings_client: AsyncClient) -> None:
@@ -93,10 +93,10 @@ async def test_patch_credential_is_write_only(settings_client: AsyncClient) -> N
     resp = await settings_client.patch("/settings", json={"OPENAI_API_KEY": "sk-secret"})
     assert resp.status_code == 200
     got = await settings_client.get("/settings")
-    cred_cat = [c for c in got.json()["categories"] if c["key"] == "provider_credentials"][0]
-    field = [f for f in cred_cat["fields"] if f["key"] == "OPENAI_API_KEY"][0]
-    assert field["is_set"] is True
-    assert "value" not in field  # never echoed
+    mp_cat = [c for c in got.json()["categories"] if c["key"] == "models_providers"][0]
+    entry = [k for k in mp_cat["credentials"]["keys"] if k["key"] == "OPENAI_API_KEY"][0]
+    assert entry["is_set"] is True
+    assert "value" not in entry  # never echoed
 
 
 async def test_patch_clear_reverts_to_default(settings_client: AsyncClient) -> None:

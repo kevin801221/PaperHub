@@ -8,5 +8,106 @@
   "notSet": "未设置",
   "providerKeyPlaceholder": "PROVIDER_API_KEY",
   "valuePlaceholder": "值",
-  "saveFailed": "无法保存设置"
+  "saveFailed": "无法保存设置",
+  "advancedModels": "各任务模型覆盖",
+  "category": {
+    "models_providers": "模型与供应商",
+    "agents_memory": "智能体与记忆",
+    "integrations": "集成服务",
+    "system": "系统"
+  },
+  "field": {
+    "PAPERHUB_MODEL_SMALL": {
+      "label": "小型层级模型",
+      "help": "分类器／快速工具调用的默认模型。"
+    },
+    "PAPERHUB_MODEL_FLAGSHIP": {
+      "label": "旗舰层级模型",
+      "help": "面向用户的文本输出默认模型。"
+    },
+    "PAPERHUB_ROUTER_MODEL": {
+      "label": "路由模型",
+      "help": "为每一轮挑选意图（chitchat／paper_search／paper_qa／slides …）。默认使用小型层级。"
+    },
+    "PAPERHUB_CHITCHAT_MODEL": {
+      "label": "闲聊模型",
+      "help": "当路由选择 chitchat 时的闲聊回复。默认使用小型层级。"
+    },
+    "PAPERHUB_PAPER_QA_MODEL": {
+      "label": "paper_qa 汇总器",
+      "help": "跨论文答案汇总，流式返回给你。默认使用旗舰层级。"
+    },
+    "PAPERHUB_PAPER_QA_SUBAGENT_MODEL": {
+      "label": "paper_qa 子智能体",
+      "help": "逐篇论文的章节导航与片段挑选。默认使用小型层级。"
+    },
+    "PAPERHUB_SQL_AGENT_MODEL": {
+      "label": "SQL 规划器",
+      "help": "library_stats 的 NL→SQL 规划与自我修复。默认使用小型层级。"
+    },
+    "PAPERHUB_SQL_ANSWER_MODEL": {
+      "label": "SQL 回答",
+      "help": "library_stats 的自然语言回答措辞。默认使用旗舰层级。"
+    },
+    "PAPERHUB_MEMORY_CONFLICT_MODEL": {
+      "label": "记忆冲突检测器",
+      "help": "检查新记忆是否与已有记忆冲突。默认使用小型层级。"
+    },
+    "PAPERHUB_REPORT_RESOLVE_MODEL": {
+      "label": "幻灯片解析器",
+      "help": "解析已启用的论文并分类幻灯片指令。默认使用小型层级。"
+    },
+    "PAPERHUB_REPORT_NOTES_MODEL": {
+      "label": "幻灯片讲稿作者",
+      "help": "撰写幻灯片的演讲者备注。默认使用旗舰层级。"
+    },
+    "PAPERHUB_REPORT_PLAN_MODEL": {
+      "label": "幻灯片智能体",
+      "help": "逐篇论文收集上下文与幻灯片智能体。默认使用旗舰层级。"
+    },
+    "PAPERHUB_REPORT_SECTION_MODEL": {
+      "label": "幻灯片单页编辑",
+      "help": "单页幻灯片／标题／导言编辑。默认使用旗舰层级。"
+    },
+    "PAPERHUB_PAPER_QA_MAX_SECTION_READS": {
+      "label": "每轮子智能体最多章节读取次数"
+    },
+    "PAPERHUB_SESSION_RETENTION_DAYS": {
+      "label": "软删除会话保留天数"
+    },
+    "PAPERHUB_MARKER_MAX_PAGES": {
+      "label": "每次 /extract 调用的 Marker 页数"
+    },
+    "PAPERHUB_MEMORY_RECALL": {
+      "label": "注入回忆的记忆",
+      "help": "向回答智能体提供启用中的记忆。"
+    },
+    "PAPERHUB_SEMANTIC_SCHOLAR_API_KEY": {
+      "label": "Semantic Scholar API 密钥",
+      "help": "可选；未认证层级有速率限制。"
+    },
+    "PAPERHUB_UNPAYWALL_EMAIL": {
+      "label": "Unpaywall 联系邮箱",
+      "help": "启用 DOI→免费 PDF 兜底。仅用于滥用记录。"
+    },
+    "PAPERHUB_MAX_UPLOAD_MB": {
+      "label": "PDF 上传上限（MiB）"
+    },
+    "PAPERHUB_WORKSPACE": {
+      "label": "工作区目录",
+      "help": "在启动时通过环境变量设置；更改后需重启后端。"
+    },
+    "PAPERHUB_LOG_LEVEL": {
+      "label": "日志级别"
+    },
+    "PAPERHUB_MARKER_URL": {
+      "label": "Marker 服务地址"
+    },
+    "PAPERHUB_INPROCESS_MARKER": {
+      "label": "进程内 Marker"
+    },
+    "PAPERHUB_SLIDE_STYLE_PROFILE": {
+      "label": "幻灯片样式配置"
+    }
+  }
 }
