@@ -91,7 +91,14 @@ async def sql_agent_stream(
     p_schema = await _mcp_call(tracer, registry, "sql.describe", {"table": "papers"})
 
     def _cols(schema: Any) -> str:
-        return ", ".join(c["name"] for c in schema) if isinstance(schema, list) else "(unavailable)"
+        # ``sql.describe`` returns ``{"columns": [{name, type}, ...]}`` (the
+        # dict envelope survives the MCP wire as one valid-JSON TextContent;
+        # a top-level list is flattened into an unparseable multi-object
+        # string — the run-517 bug). Tolerate a bare list for legacy callers.
+        cols = schema.get("columns") if isinstance(schema, dict) else schema
+        if isinstance(cols, list):
+            return ", ".join(c["name"] for c in cols if isinstance(c, dict) and "name" in c)
+        return "(unavailable)"
 
     table_schemas = f"paper_content columns: {_cols(pc_schema)}\npapers columns: {_cols(p_schema)}"
 
