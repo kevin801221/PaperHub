@@ -41,6 +41,7 @@ import tempfile
 from pathlib import Path
 
 import pymupdf
+from PIL import Image, ImageChops, ImageOps
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ def unwrap_table_boxes(tex: str) -> str:
             if close == -1:
                 continue
             content = tex[j + 1 : close]
-            if "\\begin{tabular" not in content:
+            if "\\begin{tabular" not in content and "\\begin{NiceTabular" not in content:
                 continue
             tex = tex[: m.start()] + content + tex[close + 1 :]
             unwrapped = True
@@ -592,9 +593,17 @@ _LAYOUT_PACKAGE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# Border is asymmetric {left bottom right top}: a wide table flush against the
-# page's left edge would otherwise clip; the extra left margin re-centres it.
-_TABLE_BEDROCK_PREAMBLE = r"""\documentclass[border={34pt 10pt 10pt 10pt}]{standalone}
+# A generous symmetric border (all sides) — every rasterised table must show
+# whitespace on the left AND right, which is the visual proof it rendered FULLY
+# (content flush to the image edge means it was clipped). \textwidth is
+# deliberately HUGE so a wide table (e.g. arXiv:2407.15595's NiceTabular, whose
+# \resizebox we unwrapped) typesets at its TRUE natural width with NO \hsize
+# Overfull spilling past the page edge to be clipped; standalone then crops the
+# page to that full natural width + border, so the whole table is captured with
+# margins on both sides. The image may be wide — the Canvas scales it to fit.
+# (We do NOT use adjustbox max-width: it scales nicematrix tables unreliably —
+# fine on a narrow one, still clipping a wider sibling — arXiv:2407.15595.)
+_TABLE_BEDROCK_PREAMBLE = r"""\documentclass[border=20pt]{standalone}
 \usepackage{booktabs}
 \usepackage{multirow}
 \usepackage{makecell}
@@ -604,7 +613,7 @@ _TABLE_BEDROCK_PREAMBLE = r"""\documentclass[border={34pt 10pt 10pt 10pt}]{stand
 \usepackage{colortbl}
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{graphicx}
-\setlength{\textwidth}{18cm}
+\setlength{\textwidth}{80cm}
 """
 
 _PDFLATEX_TIMEOUT_SECONDS = 60
@@ -629,6 +638,7 @@ _MISSING_INPUT_RE = re.compile(
     r"File `([^']+\.(?:sty|tex|def|cfg|clo|cls|ldf|fd))' not found"
 )
 _MAX_COMPILE_ATTEMPTS = 8  # initial + up to 7 stub-and-retry passes
+_MAX_RERUN_PASSES = 3  # nicematrix \CodeBefore + cross-refs need extra passes
 
 
 def _missing_input_files(log: str) -> list[str]:
@@ -641,13 +651,88 @@ def _missing_input_files(log: str) -> list[str]:
     return list(seen)
 
 
-def _build_snippet(env_text: str, *, preamble: str, body_prefix: str) -> str:
+# --- class/style definitions a rasterised table cell may need ---------------
+# A paper's custom documentclass (.cls) or style (.sty) often defines the
+# colours used by \cellcolor/\rowcolor and the macros used inside cells
+# (\slashNumbers, …). The standalone snippet DROPS the paper documentclass (its
+# conference page-layout breaks `standalone`), so those definitions vanish:
+# an undefined colour renders the cell BLACK, an undefined macro drops to its
+# concatenated args (arXiv:2407.15595's NiceTabular — \cellcolor{redentropy}
+# went black, \slashNumbers{a}{b}{c} became "abc"). We scan the source dir's
+# .cls/.sty and re-inject the COLOURS (always — name->value, safe) plus the
+# MACROS actually used in the env (targeted — never pulls unrelated internals).
+_COLORLET_RE = re.compile(r"\\colorlet\{[^}]+\}\{[^}]+\}")
+_MACRO_DEF_HEAD_RE = re.compile(
+    r"\\(?:newcommand|renewcommand|providecommand|DeclareRobustCommand)"
+    r"\*?\s*\{?\\([A-Za-z@]+)\}?"
+)
+_DEF_HEAD_RE = re.compile(r"\\def\s*\\([A-Za-z@]+)")
+_MACRO_NAME_RE = re.compile(r"\\([A-Za-z]+)")
+
+
+def _used_macro_names(env_text: str) -> set[str]:
+    return set(_MACRO_NAME_RE.findall(env_text))
+
+
+def _extract_used_macro_defs(body: str, used: set[str]) -> list[str]:
+    r"""Full ``\newcommand``/``\def`` definitions in ``body`` whose macro name is
+    in ``used``, extracted with brace-balancing (comment-aware, each name once)."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for pat in (_MACRO_DEF_HEAD_RE, _DEF_HEAD_RE):
+        for m in pat.finditer(body):
+            name = m.group(1)
+            if name not in used or name in seen or _is_commented(body, m.start()):
+                continue
+            j = m.end()
+            while j < len(body) and body[j] in " \t":
+                j += 1
+            while j < len(body) and body[j] == "[":  # [nargs] / [default]
+                k = body.find("]", j)
+                if k == -1:
+                    break
+                j = k + 1
+                while j < len(body) and body[j] in " \t":
+                    j += 1
+            if j < len(body) and body[j] == "{":
+                end = _matching_brace(body, j)
+                if end != -1:
+                    out.append(body[m.start() : end + 1])
+                    seen.add(name)
+    return out
+
+
+def _collect_class_definitions(source_dir: Path | None, env_text: str) -> list[str]:
+    r"""Colour + used-macro definitions from the paper's ``.cls``/``.sty`` files,
+    to inject into a standalone table snippet (see the note above). Empty when
+    ``source_dir`` is None / has no class files."""
+    if source_dir is None:
+        return []
+    used = _used_macro_names(env_text)
+    defs: list[str] = []
+    for aux in sorted(source_dir.glob("*.cls")) + sorted(source_dir.glob("*.sty")):
+        try:
+            text = aux.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        defs += _DEFINECOLOR_RE.findall(text)
+        defs += _COLORLET_RE.findall(text)
+        defs += _extract_used_macro_defs(text, used)
+    return defs
+
+
+def _build_snippet(
+    env_text: str, *, preamble: str, body_prefix: str, source_dir: Path | None = None
+) -> str:
     """Assemble a compilable standalone document for one table environment."""
     env_clean = _SENTINEL_RE.sub("", env_text)
     clean_preamble = _LAYOUT_PACKAGE_RE.sub("", _DOCUMENTCLASS_RE.sub("", preamble))
     parts: list[str] = [clean_preamble]
     for m in _DEFINECOLOR_RE.finditer(body_prefix):
         parts.append(m.group(0))
+    # Colours + used macros the paper's .cls/.sty supply (lost with the dropped
+    # documentclass) — so \cellcolor / \slashNumbers etc. resolve in the snippet.
+    parts += _collect_class_definitions(source_dir, env_text)
     context = "\n".join(p for p in parts if p)
     return (
         _TABLE_BEDROCK_PREAMBLE
@@ -690,6 +775,44 @@ def _table_pixmap(doc: pymupdf.Document, dpi: int) -> pymupdf.Pixmap | None:
     return fallback
 
 
+# Uniform white margin added around the tight-cropped table (px), as a fraction
+# of dpi (~2mm at 300dpi) so the table image always has whitespace on the left
+# AND right — the visual proof it rendered fully (no x-edge content = not clipped).
+def _table_margin_px(dpi: int) -> int:
+    return max(16, round(dpi * 0.08))
+
+
+# Cap the rasterised table image width. A genuinely wide table (the paper scaled
+# it with \resizebox; we typeset at full natural width so nothing clips) can be
+# ~70cm = 8000px at 300dpi — illegible + heavy. Scale the FULL (un-clipped) image
+# down to this instead, so it stays complete AND bounded.
+_TABLE_MAX_PX = 3600
+
+
+def _crop_and_pad(pix: pymupdf.Pixmap, pad: int, max_px: int = _TABLE_MAX_PX) -> Image.Image:
+    """Tight-crop the rasterised page to its non-white content, scale it DOWN if
+    it is wider than ``max_px`` (a wide table stays complete, just smaller), then
+    add a uniform white margin — so the image FITS the table width with equal
+    left/right (and top/bottom) margins. Removes the standalone crop's asymmetric
+    border (a wide table left-aligned in a huge \\textwidth otherwise lands flush
+    against the right edge)."""
+    mode = "RGBA" if pix.alpha else "RGB"
+    img = Image.frombytes(mode, (pix.width, pix.height), pix.samples)
+    if mode != "RGB":
+        img = img.convert("RGB")
+    bbox = ImageChops.difference(
+        img, Image.new("RGB", img.size, (255, 255, 255))
+    ).getbbox()
+    if bbox is not None:
+        img = img.crop(bbox)
+    if img.width > max_px:
+        img = img.resize(
+            (max_px, max(1, round(img.height * max_px / img.width))),
+            Image.Resampling.LANCZOS,
+        )
+    return ImageOps.expand(img, border=pad, fill=(255, 255, 255))
+
+
 def _compile_table_to_png(
     env_text: str,
     *,
@@ -697,11 +820,16 @@ def _compile_table_to_png(
     body_prefix: str,
     png_path: Path,
     dpi: int,
+    source_dir: Path | None = None,
 ) -> bool:
     """Compile one table env to ``png_path``. Return True on success; any failure
     (timeout, pdflatex absent, no PDF, blank render) is logged and returns False
-    so the caller leaves the env in place."""
-    standalone_tex = _build_snippet(env_text, preamble=preamble, body_prefix=body_prefix)
+    so the caller leaves the env in place. ``source_dir`` (default: the PNG's own
+    dir) is scanned for the paper's .cls/.sty colour + macro definitions."""
+    standalone_tex = _build_snippet(
+        env_text, preamble=preamble, body_prefix=body_prefix,
+        source_dir=source_dir if source_dir is not None else png_path.parent,
+    )
     with tempfile.TemporaryDirectory() as tmp:
         tmpdir = Path(tmp)
         (tmpdir / "tbl.tex").write_text(standalone_tex, encoding="utf-8")
@@ -761,6 +889,26 @@ def _compile_table_to_png(
                 (proc.stdout or "")[-500:],
             )
             return False
+        # nicematrix \CodeBefore cell-colour positioning + cross-references need
+        # extra pdflatex passes; rerun while the log asks for it (the PDF exists,
+        # so any failure here just keeps the under-resolved one we have).
+        for _ in range(_MAX_RERUN_PASSES):
+            if "Rerun" not in (proc.stdout or ""):
+                break
+            try:
+                proc = subprocess.run(
+                    ["pdflatex", "-interaction=nonstopmode", "tbl.tex"],
+                    cwd=str(tmpdir),
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=_PDFLATEX_TIMEOUT_SECONDS,
+                    check=False,
+                    env=env,
+                )
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                break
         if proc.returncode != 0:
             logger.debug("table: pdflatex rc=%s but PDF produced; using it", proc.returncode)
         try:
@@ -769,7 +917,7 @@ def _compile_table_to_png(
                 if pix is None:
                     logger.warning("table: rendered image is blank; leaving env as-is")
                     return False
-                pix.save(str(png_path))  # type: ignore[no-untyped-call]
+                _crop_and_pad(pix, _table_margin_px(dpi)).save(str(png_path))
         except Exception as exc:  # noqa: BLE001 — pymupdf raises bare exceptions
             logger.warning("table: rasterise failed: %s", exc)
             return False
@@ -815,6 +963,50 @@ def _convert_rasterized_table_floats(tex: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# nicematrix envs — pandoc has no support, so they ALWAYS dump → rasterise
+# ---------------------------------------------------------------------------
+
+# Order doesn't affect correctness (each \begin{NAME} requires the exact closing
+# brace, so NiceTabular can't match NiceTabularX); listed widest-first for clarity.
+_NICE_ENVS = ("NiceTabular*", "NiceTabularX", "NiceTabular", "NiceArray")
+
+
+def _find_nice_envs(tex: str) -> list[tuple[int, int]]:
+    r"""Outermost, non-commented nicematrix table envs (``\begin{NiceTabular}…``).
+    pandoc can't render nicematrix, so these always dump as raw text — we
+    rasterise them unconditionally (no pandoc round-trip needed to detect)."""
+    spans: list[tuple[int, int]] = []
+    for name in _NICE_ENVS:
+        btok = "\\begin{" + name + "}"
+        i = 0
+        while True:
+            b = tex.find(btok, i)
+            if b == -1:
+                break
+            end = _matching_end(tex, name, b + len(btok))
+            if end == -1:
+                i = b + len(btok)
+                continue
+            if not _is_commented(tex, b):
+                spans.append((b, end))
+            i = end
+    return spans
+
+
+def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Sort and absorb any span nested in / overlapping an earlier one, so each
+    region is rasterised exactly once (e.g. a ``NiceArray`` inside a
+    ``NiceTabular``)."""
+    out: list[tuple[int, int]] = []
+    for s, e in sorted(set(spans)):
+        if out and s < out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], e))
+        else:
+            out.append((s, e))
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -822,14 +1014,14 @@ def _convert_rasterized_table_floats(tex: str) -> str:
 def rasterize_complex_tables(
     tex: str, *, preamble: str, out_dir: Path, dpi: int = 300
 ) -> str:
-    r"""Repair tables so pandoc renders them as HTML, then rasterise only the
-    residue it still dumps.
+    r"""Repair tables so pandoc renders them as HTML, then rasterise what it
+    still can't: the residue it dumps AND every nicematrix env (pandoc has no
+    nicematrix support, so a ``NiceTabular`` always dumps as raw text).
 
     Returns the rewritten LaTeX. The pure-text repairs (cmidrule-trim strip,
-    fitting-box unwrap, width-env downgrade) are ALWAYS applied — they turn
-    vanished/dumped tables into real HTML tables with no rasterisation. When both
-    ``pandoc`` (to detect the residue) and ``pdflatex`` (to compile it) are
-    present, any env pandoc STILL dumps is compiled to a PNG and swapped for
+    fitting-box unwrap, width-env downgrade) are ALWAYS applied. When both
+    ``pandoc`` and ``pdflatex`` are present, each target env is compiled to a PNG
+    (with the paper's .cls/.sty colours + macros injected) and swapped for
     ``\includegraphics`` (its ``table``/``table*`` float becomes a ``figure`` so
     the caption survives). A rendered table is never rasterised; a compile
     failure leaves that env for pandoc.
@@ -840,7 +1032,7 @@ def rasterize_complex_tables(
             "rasterize_complex_tables: pandoc/pdflatex unavailable; repairs only"
         )
         return tex
-    targets = _residual_dump_envs(tex)
+    targets = _merge_spans(_find_nice_envs(tex) + _residual_dump_envs(tex))
     if not targets:
         return tex
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -855,6 +1047,7 @@ def rasterize_complex_tables(
             body_prefix=tex[:start],
             png_path=out_dir / png_name,
             dpi=dpi,
+            source_dir=out_dir,
         )
         parts.append(f"\\includegraphics{{{png_name}}}" if ok else tex[start:end])
         last_end = end

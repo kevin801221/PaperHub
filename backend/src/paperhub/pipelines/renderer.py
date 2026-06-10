@@ -246,27 +246,109 @@ _PIFONT_DING_GLYPH = {
 }
 _DING_RE = re.compile(r"\\ding\s*\{\s*(\d+)\s*\}")
 
-# The conventional check/cross aliases. The negative lookbehinds skip a DEFINING
-# site (`\newcommand{\cmark}{…}`, `\def\cmark…`) so we rewrite only USAGES and
-# never corrupt a definition that happens to survive into the render tex.
-_CHECK_CROSS_GLYPH = {"cmark": "✓", "xmark": "✗"}
-_CHECK_CROSS_RE = re.compile(
+# Standalone check / cross / Harvey-ball symbol macros that pandoc DROPS in text
+# mode (it renders nothing -> an empty table cell). Map each to its Unicode glyph.
+# Custom \newcommand aliases (\tick, \greencheck, \fullcirc, …) are already handled
+# upstream by expand_preamble_macros; THIS map is for the STANDARD package commands
+# pandoc can't render, which papers use bare in comparison tables:
+#   * amssymb ``\checkmark``  (text-mode use -> empty cell, arXiv:2503.14734)
+#   * the near-universal ``\cmark`` / ``\xmark`` aliases
+#   * bbding ``\Checkmark`` / ``\XSolidBrush``; ``\ballotx``
+#   * fontawesome ``\faCheck`` / ``\faTimes`` (+Circle/Square variants)
+#   * wasysym Harvey balls ``\CIRCLE`` / ``\Circle`` / ``\LEFTcircle`` /
+#     ``\RIGHTcircle`` (none / partial / full support -> ● ○ ◐ ◑)
+# A math-mode use (``$\checkmark$``) becomes ``$glyph$`` which MathJax renders
+# identically. The negative lookbehinds skip a DEFINING site so a definition that
+# survives into the render tex isn't corrupted; the trailing word-boundary keeps
+# longer names (``\cmarked``, ``\Circled``) intact.
+_SYMBOL_MACRO_GLYPH = {
+    "checkmark": "✓", "cmark": "✓", "Checkmark": "✓",
+    "faCheck": "✓", "faCheckCircle": "✓", "faCheckSquare": "☑",
+    "xmark": "✗", "XSolidBrush": "✗", "ballotx": "✗",
+    "faTimes": "✗", "faTimesCircle": "✗",
+    "Circle": "○", "emptycirc": "○",
+    "LEFTcircle": "◐", "halfcirc": "◐",
+    "RIGHTcircle": "◑",
+    "CIRCLE": "●", "fullcirc": "●",
+}
+# Longer alternatives first so e.g. \faCheckCircle isn't shadowed by \faCheck.
+_SYMBOL_MACRO_RE = re.compile(
     r"(?<!\\newcommand\{)(?<!\\renewcommand\{)(?<!\\providecommand\{)"
     r"(?<!\\DeclareRobustCommand\{)(?<!\\def)"
-    r"\\(cmark|xmark)(?![A-Za-z])"
+    r"\\(faCheckCircle|faCheckSquare|faTimesCircle|faCheck|faTimes|"
+    r"XSolidBrush|Checkmark|checkmark|cmark|xmark|ballotx|"
+    r"LEFTcircle|RIGHTcircle|CIRCLE|Circle|emptycirc|halfcirc|fullcirc)"
+    r"(?![A-Za-z])"
 )
 
 
 def replace_symbol_macros(tex: str) -> str:
-    r"""Rewrite check/cross symbol macros pandoc can't expand to their Unicode
-    glyph so they survive (pandoc drops the unknown macro, leaving an empty
-    span): pifont ``\ding{NN}`` and the ``\cmark``/``\xmark`` aliases.
+    r"""Rewrite check / cross / Harvey-ball symbol macros pandoc can't render to
+    their Unicode glyph so they survive (pandoc drops the unknown macro, leaving
+    an empty cell): pifont ``\ding{NN}`` plus the standard-package marks in
+    ``_SYMBOL_MACRO_GLYPH`` (amssymb/bbding/fontawesome/wasysym + the
+    ``\cmark``/``\xmark`` aliases).
 
     Runs on the render-time tex AFTER rasterisation (see the module note above).
-    Unknown ding codes are left untouched; ``\cmark``/``\xmark`` are rewritten as
-    usages only (definition sites are skipped via lookbehind)."""
+    Unknown ding codes are left untouched; marks are rewritten as usages only
+    (definition sites are skipped via lookbehind)."""
     tex = _DING_RE.sub(lambda m: _PIFONT_DING_GLYPH.get(m.group(1), m.group(0)), tex)
-    return _CHECK_CROSS_RE.sub(lambda m: _CHECK_CROSS_GLYPH[m.group(1)], tex)
+    return _SYMBOL_MACRO_RE.sub(lambda m: _SYMBOL_MACRO_GLYPH[m.group(1)], tex)
+
+
+# A paper's zero-arg text macros — model/method NAMES especially
+# (`\newcommand{\molmot}{\textsc{Molmo2}\xspace}`, arXiv:2605.02881) — live in
+# the PREAMBLE, but the render tex pandoc reads is body-only (the preamble is
+# extracted separately, §paper_pipeline), so pandoc never sees the definition and
+# DROPS every usage: the name vanishes from the rendered HTML (\molmot used 62x ->
+# gone). Prepending the raw preamble makes pandoc CHOKE (its \usepackage/\def
+# constructs), so instead we EXPAND the simple zero-arg macros ourselves — parse
+# them from the preamble and substitute their usages — so pandoc renders the
+# expansion (\textsc{Molmo2} -> small-caps "Molmo2"; an unknown trailing \xspace
+# is harmlessly dropped INLINE, never choking the whole doc).
+_NEWCOMMAND_HEAD_RE = re.compile(
+    r"\\(?:newcommand|providecommand)\*?\s*\{?\\([A-Za-z]+)\}?\s*(?=\{)"
+)
+_MACRO_TOKEN_RE = re.compile(r"\\([A-Za-z]+)(?![A-Za-z])")
+_MACRO_EXPAND_PASSES = 6
+
+
+def _parse_zero_arg_macros(preamble: str) -> dict[str, str]:
+    r"""Map each ``\newcommand{\NAME}{BODY}`` / ``\providecommand`` (zero-arg
+    ONLY — a following ``[n]`` means it takes arguments, skip it) to ``BODY``.
+    Comment-aware; ``\renewcommand``/``\def`` excluded (they often redefine
+    STANDARD commands, which we must not expand)."""
+    macros: dict[str, str] = {}
+    for m in _NEWCOMMAND_HEAD_RE.finditer(preamble):
+        if _is_commented(preamble, m.start()):
+            continue
+        brace = preamble.find("{", m.end() - 1)
+        if brace == -1:
+            continue
+        end = _skip_group(preamble, brace, "{", "}")  # index just past the '}'
+        if end > brace:
+            macros[m.group(1)] = preamble[brace + 1 : end - 1]
+    return macros
+
+
+def expand_preamble_macros(tex: str, preamble: str) -> str:
+    r"""Expand the paper's zero-arg ``\newcommand`` text macros (parsed from
+    ``preamble``) in ``tex`` so pandoc renders their content instead of dropping
+    the unknown macro. Multi-pass (bounded) for nested macros; no-op when the
+    preamble defines none."""
+    macros = _parse_zero_arg_macros(preamble)
+    if not macros:
+        return tex
+
+    def _sub(m: re.Match[str]) -> str:
+        return macros.get(m.group(1), m.group(0))
+
+    for _ in range(_MACRO_EXPAND_PASSES):
+        new = _MACRO_TOKEN_RE.sub(_sub, tex)
+        if new == tex:
+            break
+        tex = new
+    return tex
 
 
 def render_html(

@@ -7,10 +7,14 @@ import pytest
 
 from paperhub.pipelines.table_figures import (
     _build_snippet,
+    _collect_class_definitions,
     _compile_table_to_png,
     _convert_rasterized_table_floats,
+    _extract_used_macro_defs,
+    _find_nice_envs,
     _find_plain_tabulars,
     _is_blank_pixmap,
+    _merge_spans,
     _missing_input_files,
     _normalize_colspec_for_plain,
     _parse_newcolumntype_defs,
@@ -348,7 +352,8 @@ def test_table_pixmap_falls_back_to_only_full_page_content() -> None:
 
 def test_snippet_has_bedrock_and_document() -> None:
     snip = _build_snippet("\\begin{tabular}{c}a\\\\\\end{tabular}", preamble="", body_prefix="")
-    assert "\\documentclass[border={34pt 10pt 10pt 10pt}]{standalone}" in snip
+    assert "\\documentclass[border=20pt]{standalone}" in snip
+    assert "\\setlength{\\textwidth}{80cm}" in snip  # huge -> natural width, no clip
     assert "\\usepackage{booktabs}" in snip
     assert "\\begin{document}" in snip and "\\end{document}" in snip
     assert "\\begin{tabular}{c}a" in snip
@@ -471,6 +476,10 @@ def test_compile_stubs_missing_sty_and_retries(
     monkeypatch.setattr(
         "paperhub.pipelines.table_figures._table_pixmap", lambda doc, dpi: _FakePix()
     )
+    # _crop_and_pad needs a real pixmap; bypass it (return the fake, which saves).
+    monkeypatch.setattr(
+        "paperhub.pipelines.table_figures._crop_and_pad", lambda pix, pad: pix
+    )
     monkeypatch.setattr(
         "paperhub.pipelines.table_figures.pymupdf.open", fake_open
     )
@@ -573,7 +582,7 @@ def test_orchestrator_rasterizes_residual_dump(
         lambda _t: '<div class="tabular"><p><span>l|rrrr</span>a</p></div>',
     )
 
-    def fake_compile(env_text: str, *, preamble: str, body_prefix: str, png_path: Path, dpi: int) -> bool:
+    def fake_compile(env_text: str, *, png_path: Path, **kw: object) -> bool:
         png_path.write_bytes(b"\x89PNG")
         return True
 
@@ -599,3 +608,105 @@ def test_orchestrator_compile_failure_leaves_env(
     )
     tex = "\\begin{tabular}{cc}a & b\\\\\\end{tabular}"
     assert rasterize_complex_tables(tex, preamble="", out_dir=tmp_path, dpi=150) == tex
+
+
+# ---------------------------------------------------------------------------
+# nicematrix (NiceTabular) rasterisation
+# ---------------------------------------------------------------------------
+
+
+def test_find_nice_envs_finds_nicetabular() -> None:
+    tex = "pre \\begin{NiceTabular}{lcc}a & b & c\\\\\\end{NiceTabular} post"
+    spans = _find_nice_envs(tex)
+    assert len(spans) == 1
+    s, e = spans[0]
+    assert tex[s:e].startswith("\\begin{NiceTabular}")
+    assert tex[s:e].endswith("\\end{NiceTabular}")
+
+
+def test_find_nice_envs_skips_commented_and_handles_variants() -> None:
+    tex = (
+        "% \\begin{NiceTabular}{l}x\\\\\\end{NiceTabular}\n"
+        "\\begin{NiceTabularX}{\\linewidth}{lc}a & b\\\\\\end{NiceTabularX}"
+    )
+    spans = _find_nice_envs(tex)
+    assert len(spans) == 1  # commented one skipped, NiceTabularX found
+    assert "NiceTabularX" in tex[spans[0][0]:spans[0][1]]
+
+
+def test_unwrap_resizebox_around_nicetabular() -> None:
+    tex = "\\resizebox{\\columnwidth}{!}{\\begin{NiceTabular}{lc}a & b\\\\\\end{NiceTabular}}"
+    out = unwrap_table_boxes(tex)
+    assert "\\resizebox" not in out
+    assert out.startswith("\\begin{NiceTabular}")
+
+
+def test_merge_spans_absorbs_nested() -> None:
+    assert _merge_spans([(0, 100), (10, 40)]) == [(0, 100)]  # nested -> outer
+    assert _merge_spans([(50, 60), (0, 10)]) == [(0, 10), (50, 60)]  # disjoint, sorted
+
+
+def test_extract_used_macro_defs_brace_balanced() -> None:
+    cls = (
+        "\\newcommand{\\slashNumbers}[3]{#1\\hspace{1pt}/\\hspace{1pt}#2/#3}\n"
+        "\\newcommand{\\unused}{nope}\n"
+    )
+    defs = _extract_used_macro_defs(cls, {"slashNumbers"})
+    assert len(defs) == 1
+    assert defs[0].startswith("\\newcommand{\\slashNumbers}[3]{")
+    assert defs[0].endswith("#2/#3}")  # full balanced body captured
+    assert "unused" not in "".join(defs)  # not referenced -> not pulled
+
+
+def test_collect_class_definitions_colors_and_used_macros(tmp_path: Path) -> None:
+    (tmp_path / "fairmeta.cls").write_text(
+        "\\definecolor{redentropy}{HTML}{fff0f0}\n"
+        "\\colorlet{best}{blue!10}\n"
+        "\\newcommand{\\slashNumbers}[3]{#1/#2/#3}\n"
+        "\\newcommand{\\notused}{x}\n",
+        encoding="utf-8",
+    )
+    env = "\\begin{NiceTabular}{l}\\cellcolor{redentropy}\\slashNumbers{1}{2}{3}\\end{NiceTabular}"
+    joined = "\n".join(_collect_class_definitions(tmp_path, env))
+    assert "\\definecolor{redentropy}{HTML}{fff0f0}" in joined
+    assert "\\colorlet{best}{blue!10}" in joined  # all colours injected
+    assert "\\slashNumbers" in joined  # used macro injected
+    assert "notused" not in joined  # unused macro skipped
+
+
+def test_collect_class_definitions_none_source() -> None:
+    assert _collect_class_definitions(None, "\\foo") == []
+
+
+def test_build_snippet_injects_class_colors(tmp_path: Path) -> None:
+    (tmp_path / "x.cls").write_text(
+        "\\definecolor{hl}{HTML}{abcdef}\n", encoding="utf-8"
+    )
+    snip = _build_snippet(
+        "\\begin{NiceTabular}{l}\\cellcolor{hl}a\\\\\\end{NiceTabular}",
+        preamble="", body_prefix="", source_dir=tmp_path,
+    )
+    assert "\\definecolor{hl}{HTML}{abcdef}" in snip
+
+
+def test_orchestrator_rasterizes_nicetabular(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # NiceTabular always dumps under pandoc -> rasterised unconditionally, even
+    # when _render_pandoc reports no <div class="tabular"> dump.
+    monkeypatch.setattr("paperhub.pipelines.table_figures.shutil.which", _both_present)
+    monkeypatch.setattr(
+        "paperhub.pipelines.table_figures._render_pandoc",
+        lambda _t: "<p><span>lcc</span>a</p>",  # nicematrix-style dump, not <div>
+    )
+
+    def fake_compile(env_text: str, *, png_path: Path, **kw: object) -> bool:
+        png_path.write_bytes(b"\x89PNG")
+        return True
+
+    monkeypatch.setattr("paperhub.pipelines.table_figures._compile_table_to_png", fake_compile)
+    tex = "pre \\begin{NiceTabular}{lcc}a & b & c\\\\\\end{NiceTabular} post"
+    out = rasterize_complex_tables(tex, preamble="", out_dir=tmp_path, dpi=150)
+    assert "\\includegraphics{table-fig-001.png}" in out
+    assert "\\begin{NiceTabular}" not in out
+    assert (tmp_path / "table-fig-001.png").is_file()
