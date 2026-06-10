@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
-import type { SettingsCredentials, SettingsField } from "../../lib/api";
+import type { SettingsCredentials, SettingsField, SettingsModelCheck } from "../../lib/api";
 import { useSettingsStore } from "../../store/settings";
 import { Button } from "../ui/button";
 import { Select } from "../ui/select";
@@ -14,11 +14,34 @@ export function SettingsModal() {
   const { t } = useTranslation(["common", "settings"]);
   const { isOpen, config, error, restartPending, close, fetchConfig, save } =
     useSettingsStore();
+  const modelOptions = useSettingsStore((s) => s.modelOptions);
+  const readiness = useSettingsStore((s) => s.readiness);
   const [activeCat, setActiveCat] = useState<string | null>(null);
 
   useEffect(() => {
     if (isOpen && !config) void fetchConfig();
   }, [isOpen, config, fetchConfig]);
+
+  // Flatten per-provider model options into one de-duped autocomplete list for
+  // the model-name fields. Best-effort: empty list just means no suggestions.
+  const modelSuggestions = Array.from(
+    new Set(Object.values(modelOptions?.options ?? {}).flat()),
+  ).sort();
+  // readiness only validates the two gate models — surface their missing-key
+  // hint inline on the matching field.
+  const modelChecks: Record<string, SettingsModelCheck | undefined> = {
+    PAPERHUB_MODEL_SMALL: readiness?.models.small,
+    PAPERHUB_MODEL_FLAGSHIP: readiness?.models.flagship,
+  };
+  const renderField = (f: SettingsField) => (
+    <FieldRow
+      key={`${f.key}:${f.value ?? ""}`}
+      field={f}
+      onSave={save}
+      modelListId={f.key.includes("MODEL") && modelSuggestions.length > 0 ? "model-suggestions" : undefined}
+      modelCheck={modelChecks[f.key]}
+    />
+  );
 
   // Derive the effective category: an explicit selection, else the first one.
   // Deriving (rather than syncing via an effect) avoids cascading renders.
@@ -87,25 +110,23 @@ export function SettingsModal() {
                 <CredentialEditor credentials={current.credentials} onSave={save} />
               </div>
             )}
-            {current?.fields
-              .filter((f) => !f.advanced)
-              .map((f) => (
-                <FieldRow key={`${f.key}:${f.value ?? ""}`} field={f} onSave={save} />
-              ))}
+            {current?.fields.filter((f) => !f.advanced).map(renderField)}
             {current?.fields.some((f) => f.advanced) && (
               <details className="mt-2 rounded-md border border-border">
                 <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium text-muted-foreground">
                   {t("settings:advancedModels", "Per-slot model overrides")}
                 </summary>
                 <div className="border-t border-border p-3 pb-0">
-                  {current.fields
-                    .filter((f) => f.advanced)
-                    .map((f) => (
-                      <FieldRow key={`${f.key}:${f.value ?? ""}`} field={f} onSave={save} />
-                    ))}
+                  {current.fields.filter((f) => f.advanced).map(renderField)}
                 </div>
               </details>
             )}
+            {/* Shared autocomplete source for all model-name fields. */}
+            <datalist id="model-suggestions">
+              {modelSuggestions.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
           </div>
         </div>
           </>
@@ -149,9 +170,15 @@ export function SettingsModal() {
 function FieldRow({
   field,
   onSave,
+  modelListId,
+  modelCheck,
 }: {
   field: SettingsField;
   onSave: (patch: Record<string, string | null>) => Promise<void>;
+  /** When set, the string input offers this `<datalist>` of model suggestions. */
+  modelListId?: string;
+  /** Gate-model validity (small/flagship only) for an inline missing-key hint. */
+  modelCheck?: SettingsModelCheck;
 }) {
   const { t } = useTranslation(["common", "settings"]);
   const [draft, setDraft] = useState<string>(field.value ?? "");
@@ -275,6 +302,7 @@ function FieldRow({
           <input
             id={field.key}
             type={field.type === "int" ? "number" : "text"}
+            list={modelListId}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             className="h-8 w-full rounded-md border border-border bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50"
@@ -295,6 +323,13 @@ function FieldRow({
           <Check />
         </Button>
       </div>
+      {modelCheck && !modelCheck.key_ok && (
+        <p className="mt-1 text-xs text-destructive">
+          {t("settings:modelKeyMissing", "Missing provider key: {{keys}}", {
+            keys: modelCheck.missing_keys.join(", ") || "—",
+          })}
+        </p>
+      )}
       {helpText && <p className="mt-1 text-xs text-muted-foreground">{helpText}</p>}
     </div>
   );
