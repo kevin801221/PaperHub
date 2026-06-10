@@ -78,11 +78,19 @@ export function MessageBubble({
       data-role={message.role}
       className={`flex w-full ${isUser ? "justify-end" : "justify-start"}`}
     >
-      <div className={`group/bubble relative max-w-[80%] ${isStreamingEmpty ? "min-w-[64px]" : ""}`}>
+      <div
+        className={`group/bubble relative ${isUser ? "max-w-[80%]" : "w-full pr-8 sm:pr-12"} ${
+          isStreamingEmpty ? "min-w-[64px]" : ""
+        }`}
+      >
         <div
-          className={`rounded-2xl px-4 py-2 prose prose-sm dark:prose-invert ${
-            isUser ? "bg-primary text-primary-foreground" : "bg-card border border-border"
-          }`}
+          className={
+            isUser
+              ? "rounded-2xl px-4 py-2 prose prose-sm dark:prose-invert bg-primary text-primary-foreground"
+              : // Assistant: full-width, no bubble — markdown, cards and traces get
+                // the whole reading column (ChatGPT/Claude convention).
+                "prose prose-sm max-w-none dark:prose-invert"
+          }
         >
           {isError ? (
             <div className="space-y-2">
@@ -164,7 +172,11 @@ export function MessageBubble({
             from the Retry button's RotateCcw refresh loop and from a pencil,
             which would imply destructive in-place editing). */}
         {(canCopy || showFork) && (
-          <div className="opacity-0 group-hover/bubble:opacity-100 focus-within:opacity-100 transition-opacity absolute -bottom-7 right-0 flex gap-1">
+          <div
+            className={`opacity-0 group-hover/bubble:opacity-100 focus-within:opacity-100 transition-opacity absolute -bottom-7 flex gap-1 ${
+              isUser ? "right-0" : "right-8 sm:right-12"
+            }`}
+          >
             {canCopy && (
               <Button
                 type="button"
