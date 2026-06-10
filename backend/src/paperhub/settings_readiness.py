@@ -30,6 +30,7 @@ import litellm
 from paperhub.settings_registry import (
     LIVE_DISCOVERY_PROVIDERS,
     field_by_key,
+    primary_key_for_model,
     provider_for_credential_key,
 )
 
@@ -58,14 +59,21 @@ def _effective_model(env_key: str) -> str:
 
 
 def _missing_keys(model: str) -> list[str]:
-    """Required env keys LiteLLM reports absent for this model (best-effort)."""
+    """Provider keys this model needs but doesn't have. Beyond LiteLLM's own
+    check, an **empty-valued** primary key is treated as missing — LiteLLM counts
+    an empty env var as "present", which is the bug behind a removed `.env` key
+    silently passing the gate."""
     try:
         env = litellm.validate_environment(model=model)
-        if env.get("keys_in_environment"):
-            return []
-        return list(env.get("missing_keys") or [])
+        if not env.get("keys_in_environment"):
+            return list(env.get("missing_keys") or [])
     except Exception:  # noqa: BLE001 — never break the gate
         return []
+    # "present" per LiteLLM — but flag an empty primary key as actually missing.
+    key_name = primary_key_for_model(model)
+    if key_name and not (os.environ.get(key_name) or "").strip():
+        return [key_name]
+    return []
 
 
 async def _ping_model(model: str) -> dict[str, Any]:

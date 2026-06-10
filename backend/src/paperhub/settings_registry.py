@@ -106,6 +106,22 @@ LIVE_DISCOVERY_PROVIDERS: frozenset[str] = frozenset(
 )
 
 
+# Reverse of the *_API_KEY entries above: provider -> its primary key env var.
+# Lets the readiness check name the key a model needs even when LiteLLM reports
+# an empty-valued env var as "present" (so we can flag it as actually missing).
+PROVIDER_PRIMARY_KEY: dict[str, str] = {
+    provider: key
+    for key, provider in _CREDENTIAL_KEY_TO_PROVIDER.items()
+    if key.endswith("_API_KEY")
+}
+
+
+def primary_key_for_model(model: str) -> str | None:
+    """The primary API-key env var for a ``provider/model`` id, if known."""
+    provider = model.split("/", 1)[0] if "/" in model else None
+    return PROVIDER_PRIMARY_KEY.get(provider) if provider else None
+
+
 def provider_for_credential_key(key: str) -> str | None:
     """The LiteLLM provider a credential key unlocks, or None for non-key creds
     (config-only keys like AZURE_API_BASE that don't map to a provider list)."""

@@ -67,6 +67,23 @@ async def test_compute_readiness_ready_when_ping_succeeds(
 
 
 @pytest.mark.asyncio
+async def test_empty_key_is_reported_missing_not_pinged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An empty GEMINI_API_KEY (LiteLLM calls it "present") must be named as
+    missing — and short-circuit, never reaching the ping."""
+    sr._reset_cache_for_tests()
+    monkeypatch.setenv("GEMINI_API_KEY", "")  # present-but-empty
+    monkeypatch.setattr(
+        sr.litellm, "acompletion", _boom("must not ping an empty-key model")
+    )
+    result = await sr.compute_readiness([])
+    assert result["ready"] is False
+    assert result["models"]["small"]["key_ok"] is False
+    assert result["models"]["small"]["missing_keys"] == ["GEMINI_API_KEY"]
+
+
+@pytest.mark.asyncio
 async def test_compute_readiness_not_ready_when_ping_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
