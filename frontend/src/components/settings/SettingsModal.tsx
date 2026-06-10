@@ -45,17 +45,38 @@ export function SettingsModal() {
     />
   );
 
-  // Render fields with a heading whenever a new (contiguous) sub-group starts.
-  // Ungrouped fields render inline as before.
+  // Render fields, wrapping each contiguous sub-group under a titled, indented
+  // container so the group's fields read as nested below its heading. Ungrouped
+  // fields render inline as before.
   const renderFields = (fields: SettingsField[]) => {
-    let lastGroup: string | undefined;
     const out: ReactNode[] = [];
-    for (const f of fields) {
-      if (f.group && f.group !== lastGroup) {
-        out.push(<GroupHeading key={`group:${f.group}`} group={f.group} />);
+    let i = 0;
+    while (i < fields.length) {
+      const field = fields[i]!;
+      const group = field.group;
+      if (!group) {
+        out.push(renderField(field));
+        i += 1;
+        continue;
       }
-      lastGroup = f.group || undefined;
-      out.push(renderField(f));
+      const groupFields: SettingsField[] = [];
+      for (let f = fields[i]; f && f.group === group; f = fields[i]) {
+        groupFields.push(f);
+        i += 1;
+      }
+      out.push(
+        <section
+          key={`group:${group}`}
+          className="mt-4 overflow-hidden rounded-xl border border-border first:mt-0"
+        >
+          <header className="border-b border-border bg-muted/40 px-4 py-2.5">
+            <h3 className="text-sm font-semibold text-foreground">
+              {t(`settings:group.${group}`, group)}
+            </h3>
+          </header>
+          <div className="px-4 pt-4">{groupFields.map(renderField)}</div>
+        </section>,
+      );
     }
     return out;
   };
@@ -374,15 +395,6 @@ function FieldRow({
       {helpText && <p className="mt-1 text-xs text-muted-foreground">{helpText}</p>}
       {field.docs_url && <DocsLink url={field.docs_url} />}
     </div>
-  );
-}
-
-function GroupHeading({ group }: { group: string }) {
-  const { t } = useTranslation("settings");
-  return (
-    <h3 className="mb-3 mt-6 border-b border-border pb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground first:mt-0">
-      {t(`group.${group}`, group)}
-    </h3>
   );
 }
 
