@@ -19,6 +19,9 @@ interface SettingsState {
   restartPending: string[];
   /** First-run gate state; null until first fetch. */
   readiness: SettingsReadiness | null;
+  /** True while a readiness pre-flight is in progress (the ping takes a few
+   *  seconds) — the UI shows "checking…" instead of a stale warning. */
+  readinessChecking: boolean;
   /** Per-provider model autocomplete options; null until fetched. */
   modelOptions: SettingsModelOptions | null;
   /** The first-run tour auto-shows while not ready unless the user dismisses it
@@ -41,6 +44,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
   error: false,
   restartPending: [],
   readiness: null,
+  readinessChecking: false,
   modelOptions: null,
   welcomeDismissed: false,
   open: () => {
@@ -64,6 +68,7 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     }
   },
   fetchReadiness: async () => {
+    set({ readinessChecking: true });
     try {
       const prev = get().readiness;
       const next = await getReadiness();
@@ -74,6 +79,8 @@ export const useSettingsStore = create<SettingsState>()((set, get) => ({
     } catch {
       // Boot-time / transient backend errors must not crash the app; leave the
       // last known readiness in place (null = treated as not-ready by callers).
+    } finally {
+      set({ readinessChecking: false });
     }
   },
   fetchModelOptions: async () => {

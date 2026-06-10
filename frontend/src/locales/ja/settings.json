@@ -17,6 +17,8 @@
   "loadFailed": "設定を読み込めませんでした。",
   "retry": "再試行",
   "modelKeyMissing": "プロバイダーキーがありません：{{keys}}",
+  "modelUnusable": "このモデルは使用できません——モデル名が利用可能か、API キーが有効かを確認してください。",
+  "modelChecking": "モデルの利用可否を確認中…",
   "welcome": {
     "title": "PaperHub へようこそ",
     "subtitle": "モデルプロバイダーを接続すると会話を開始できます。「設定」で次の手順を完了してください：",

@@ -17,6 +17,8 @@
   "loadFailed": "Couldn't load settings.",
   "retry": "Retry",
   "modelKeyMissing": "Missing provider key: {{keys}}",
+  "modelUnusable": "This model isn't usable — check that the model name is available and the API key is valid.",
+  "modelChecking": "Checking model availability…",
   "welcome": {
     "title": "Welcome to PaperHub",
     "subtitle": "Connect a model provider to start chatting. Finish these steps in Settings:",

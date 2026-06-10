@@ -16,6 +16,7 @@ export function SettingsModal() {
     useSettingsStore();
   const modelOptions = useSettingsStore((s) => s.modelOptions);
   const readiness = useSettingsStore((s) => s.readiness);
+  const readinessChecking = useSettingsStore((s) => s.readinessChecking);
   const [activeCat, setActiveCat] = useState<string | null>(null);
 
   useEffect(() => {
@@ -40,6 +41,7 @@ export function SettingsModal() {
       onSave={save}
       modelListId={f.key.includes("MODEL") && modelSuggestions.length > 0 ? "model-suggestions" : undefined}
       modelCheck={modelChecks[f.key]}
+      modelChecking={readinessChecking && f.key in modelChecks}
     />
   );
 
@@ -172,6 +174,7 @@ function FieldRow({
   onSave,
   modelListId,
   modelCheck,
+  modelChecking,
 }: {
   field: SettingsField;
   onSave: (patch: Record<string, string | null>) => Promise<void>;
@@ -179,6 +182,9 @@ function FieldRow({
   modelListId?: string;
   /** Gate-model validity (small/flagship only) for an inline missing-key hint. */
   modelCheck?: SettingsModelCheck;
+  /** True while readiness is being re-checked — show "checking…" not the stale
+   *  warning (the pre-flight ping takes a few seconds). */
+  modelChecking?: boolean;
 }) {
   const { t } = useTranslation(["common", "settings"]);
   const [draft, setDraft] = useState<string>(field.value ?? "");
@@ -323,12 +329,24 @@ function FieldRow({
           <Check />
         </Button>
       </div>
-      {modelCheck && !modelCheck.key_ok && (
-        <p className="mt-1 text-xs text-destructive">
-          {t("settings:modelKeyMissing", "Missing provider key: {{keys}}", {
-            keys: modelCheck.missing_keys.join(", ") || "—",
-          })}
+      {modelChecking ? (
+        <p className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
+          <Loader2 className="size-3 animate-spin" />
+          {t("settings:modelChecking", "Checking model availability…")}
         </p>
+      ) : (
+        modelCheck && !modelCheck.key_ok && (
+          <p className="mt-1 text-xs text-destructive">
+            {modelCheck.missing_keys.length > 0
+              ? t("settings:modelKeyMissing", "Missing provider key: {{keys}}", {
+                  keys: modelCheck.missing_keys.join(", "),
+                })
+              : t(
+                  "settings:modelUnusable",
+                  "This model isn't usable — check that the model name is available and the API key is valid.",
+                )}
+          </p>
+        )
       )}
       {helpText && <p className="mt-1 text-xs text-muted-foreground">{helpText}</p>}
     </div>
