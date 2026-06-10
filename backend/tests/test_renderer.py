@@ -62,6 +62,22 @@ def test_replace_symbol_macros_tolerates_spaces_and_leaves_unknown() -> None:
     assert replace_symbol_macros(r"\ding{200}") == r"\ding{200}"
 
 
+def test_replace_symbol_macros_checkmark_text_mode() -> None:
+    # arXiv:2503.14734: \checkmark used bare in table cells (text mode) — pandoc
+    # drops it -> empty cell; substitute ✓. Definition site is skipped.
+    assert replace_symbol_macros("Real & \\checkmark & \\checkmark") == "Real & ✓ & ✓"
+    assert replace_symbol_macros("\\checkmarks list") == "\\checkmarks list"  # word-boundary
+
+
+def test_replace_symbol_macros_harvey_balls_and_fontawesome() -> None:
+    # wasysym Harvey balls (none/partial/full) + fontawesome + bbding marks.
+    assert replace_symbol_macros("\\CIRCLE \\Circle \\LEFTcircle \\RIGHTcircle") == "● ○ ◐ ◑"
+    assert replace_symbol_macros("\\faCheck \\faTimes \\faCheckCircle") == "✓ ✗ ✓"
+    assert replace_symbol_macros("\\Checkmark \\XSolidBrush") == "✓ ✗"
+    # longer name not shadowed; \Circled (longer) untouched
+    assert replace_symbol_macros("\\Circled x") == "\\Circled x"
+
+
 def test_replace_symbol_macros_cmark_xmark_usages() -> None:
     # arXiv:2509.22093: \newcommand{\cmark}{\ding{51}} — pandoc drops the custom
     # macro usage (definition often outside the rendered body) -> empty span.

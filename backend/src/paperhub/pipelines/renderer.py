@@ -246,27 +246,54 @@ _PIFONT_DING_GLYPH = {
 }
 _DING_RE = re.compile(r"\\ding\s*\{\s*(\d+)\s*\}")
 
-# The conventional check/cross aliases. The negative lookbehinds skip a DEFINING
-# site (`\newcommand{\cmark}{…}`, `\def\cmark…`) so we rewrite only USAGES and
-# never corrupt a definition that happens to survive into the render tex.
-_CHECK_CROSS_GLYPH = {"cmark": "✓", "xmark": "✗"}
-_CHECK_CROSS_RE = re.compile(
+# Standalone check / cross / Harvey-ball symbol macros that pandoc DROPS in text
+# mode (it renders nothing -> an empty table cell). Map each to its Unicode glyph.
+# Custom \newcommand aliases (\tick, \greencheck, \fullcirc, …) are already handled
+# upstream by expand_preamble_macros; THIS map is for the STANDARD package commands
+# pandoc can't render, which papers use bare in comparison tables:
+#   * amssymb ``\checkmark``  (text-mode use -> empty cell, arXiv:2503.14734)
+#   * the near-universal ``\cmark`` / ``\xmark`` aliases
+#   * bbding ``\Checkmark`` / ``\XSolidBrush``; ``\ballotx``
+#   * fontawesome ``\faCheck`` / ``\faTimes`` (+Circle/Square variants)
+#   * wasysym Harvey balls ``\CIRCLE`` / ``\Circle`` / ``\LEFTcircle`` /
+#     ``\RIGHTcircle`` (none / partial / full support -> ● ○ ◐ ◑)
+# A math-mode use (``$\checkmark$``) becomes ``$glyph$`` which MathJax renders
+# identically. The negative lookbehinds skip a DEFINING site so a definition that
+# survives into the render tex isn't corrupted; the trailing word-boundary keeps
+# longer names (``\cmarked``, ``\Circled``) intact.
+_SYMBOL_MACRO_GLYPH = {
+    "checkmark": "✓", "cmark": "✓", "Checkmark": "✓",
+    "faCheck": "✓", "faCheckCircle": "✓", "faCheckSquare": "☑",
+    "xmark": "✗", "XSolidBrush": "✗", "ballotx": "✗",
+    "faTimes": "✗", "faTimesCircle": "✗",
+    "Circle": "○", "emptycirc": "○",
+    "LEFTcircle": "◐", "halfcirc": "◐",
+    "RIGHTcircle": "◑",
+    "CIRCLE": "●", "fullcirc": "●",
+}
+# Longer alternatives first so e.g. \faCheckCircle isn't shadowed by \faCheck.
+_SYMBOL_MACRO_RE = re.compile(
     r"(?<!\\newcommand\{)(?<!\\renewcommand\{)(?<!\\providecommand\{)"
     r"(?<!\\DeclareRobustCommand\{)(?<!\\def)"
-    r"\\(cmark|xmark)(?![A-Za-z])"
+    r"\\(faCheckCircle|faCheckSquare|faTimesCircle|faCheck|faTimes|"
+    r"XSolidBrush|Checkmark|checkmark|cmark|xmark|ballotx|"
+    r"LEFTcircle|RIGHTcircle|CIRCLE|Circle|emptycirc|halfcirc|fullcirc)"
+    r"(?![A-Za-z])"
 )
 
 
 def replace_symbol_macros(tex: str) -> str:
-    r"""Rewrite check/cross symbol macros pandoc can't expand to their Unicode
-    glyph so they survive (pandoc drops the unknown macro, leaving an empty
-    span): pifont ``\ding{NN}`` and the ``\cmark``/``\xmark`` aliases.
+    r"""Rewrite check / cross / Harvey-ball symbol macros pandoc can't render to
+    their Unicode glyph so they survive (pandoc drops the unknown macro, leaving
+    an empty cell): pifont ``\ding{NN}`` plus the standard-package marks in
+    ``_SYMBOL_MACRO_GLYPH`` (amssymb/bbding/fontawesome/wasysym + the
+    ``\cmark``/``\xmark`` aliases).
 
     Runs on the render-time tex AFTER rasterisation (see the module note above).
-    Unknown ding codes are left untouched; ``\cmark``/``\xmark`` are rewritten as
-    usages only (definition sites are skipped via lookbehind)."""
+    Unknown ding codes are left untouched; marks are rewritten as usages only
+    (definition sites are skipped via lookbehind)."""
     tex = _DING_RE.sub(lambda m: _PIFONT_DING_GLYPH.get(m.group(1), m.group(0)), tex)
-    return _CHECK_CROSS_RE.sub(lambda m: _CHECK_CROSS_GLYPH[m.group(1)], tex)
+    return _SYMBOL_MACRO_RE.sub(lambda m: _SYMBOL_MACRO_GLYPH[m.group(1)], tex)
 
 
 # A paper's zero-arg text macros — model/method NAMES especially
