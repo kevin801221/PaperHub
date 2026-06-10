@@ -10,10 +10,42 @@ import pytest
 from paperhub.pipelines.renderer import (
     _orphaned_env_ends,
     _pandoc_hostile_def_spans,
+    _parse_zero_arg_macros,
     _unclosed_braces,
+    expand_preamble_macros,
     render_html,
     replace_symbol_macros,
 )
+
+
+def test_parse_zero_arg_macros_skips_arg_and_commented() -> None:
+    preamble = (
+        "\\newcommand{\\molmot}{\\textsc{Molmo2}\\xspace}\n"
+        "\\providecommand{\\foo}{bar}\n"
+        "\\newcommand{\\witharg}[2]{#1-#2}\n"   # takes args -> skipped
+        "% \\newcommand{\\dead}{x}\n"            # commented -> skipped
+    )
+    macros = _parse_zero_arg_macros(preamble)
+    assert macros == {"molmot": "\\textsc{Molmo2}\\xspace", "foo": "bar"}
+
+
+def test_expand_preamble_macros_name_macro() -> None:
+    # arXiv:2605.02881: \molmot used in the body but defined only in the preamble;
+    # the render tex is body-only, so pandoc drops it -> expand it ourselves.
+    preamble = "\\newcommand{\\molmot}{\\textsc{Molmo2}\\xspace}"
+    body = "We present \\molmot, and \\molmot{} again."
+    out = expand_preamble_macros(body, preamble)
+    assert "\\molmot" not in out
+    assert out.count("\\textsc{Molmo2}") == 2
+
+
+def test_expand_preamble_macros_nested_multipass() -> None:
+    preamble = "\\newcommand{\\sys}{\\name v2}\n\\newcommand{\\name}{Molmo}"
+    assert expand_preamble_macros("run \\sys here", preamble) == "run Molmo v2 here"
+
+
+def test_expand_preamble_macros_noop_without_defs() -> None:
+    assert expand_preamble_macros("plain \\unknown text", "") == "plain \\unknown text"
 
 
 def test_replace_symbol_macros_ding_check_and_cross() -> None:

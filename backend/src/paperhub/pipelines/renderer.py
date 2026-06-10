@@ -269,6 +269,61 @@ def replace_symbol_macros(tex: str) -> str:
     return _CHECK_CROSS_RE.sub(lambda m: _CHECK_CROSS_GLYPH[m.group(1)], tex)
 
 
+# A paper's zero-arg text macros — model/method NAMES especially
+# (`\newcommand{\molmot}{\textsc{Molmo2}\xspace}`, arXiv:2605.02881) — live in
+# the PREAMBLE, but the render tex pandoc reads is body-only (the preamble is
+# extracted separately, §paper_pipeline), so pandoc never sees the definition and
+# DROPS every usage: the name vanishes from the rendered HTML (\molmot used 62x ->
+# gone). Prepending the raw preamble makes pandoc CHOKE (its \usepackage/\def
+# constructs), so instead we EXPAND the simple zero-arg macros ourselves — parse
+# them from the preamble and substitute their usages — so pandoc renders the
+# expansion (\textsc{Molmo2} -> small-caps "Molmo2"; an unknown trailing \xspace
+# is harmlessly dropped INLINE, never choking the whole doc).
+_NEWCOMMAND_HEAD_RE = re.compile(
+    r"\\(?:newcommand|providecommand)\*?\s*\{?\\([A-Za-z]+)\}?\s*(?=\{)"
+)
+_MACRO_TOKEN_RE = re.compile(r"\\([A-Za-z]+)(?![A-Za-z])")
+_MACRO_EXPAND_PASSES = 6
+
+
+def _parse_zero_arg_macros(preamble: str) -> dict[str, str]:
+    r"""Map each ``\newcommand{\NAME}{BODY}`` / ``\providecommand`` (zero-arg
+    ONLY — a following ``[n]`` means it takes arguments, skip it) to ``BODY``.
+    Comment-aware; ``\renewcommand``/``\def`` excluded (they often redefine
+    STANDARD commands, which we must not expand)."""
+    macros: dict[str, str] = {}
+    for m in _NEWCOMMAND_HEAD_RE.finditer(preamble):
+        if _is_commented(preamble, m.start()):
+            continue
+        brace = preamble.find("{", m.end() - 1)
+        if brace == -1:
+            continue
+        end = _skip_group(preamble, brace, "{", "}")  # index just past the '}'
+        if end > brace:
+            macros[m.group(1)] = preamble[brace + 1 : end - 1]
+    return macros
+
+
+def expand_preamble_macros(tex: str, preamble: str) -> str:
+    r"""Expand the paper's zero-arg ``\newcommand`` text macros (parsed from
+    ``preamble``) in ``tex`` so pandoc renders their content instead of dropping
+    the unknown macro. Multi-pass (bounded) for nested macros; no-op when the
+    preamble defines none."""
+    macros = _parse_zero_arg_macros(preamble)
+    if not macros:
+        return tex
+
+    def _sub(m: re.Match[str]) -> str:
+        return macros.get(m.group(1), m.group(0))
+
+    for _ in range(_MACRO_EXPAND_PASSES):
+        new = _MACRO_TOKEN_RE.sub(_sub, tex)
+        if new == tex:
+            break
+        tex = new
+    return tex
+
+
 def render_html(
     *,
     source: Path,
