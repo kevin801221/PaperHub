@@ -15,6 +15,21 @@ WORKDIR /app
 #     HARD requirement for the `slides` intent (Beamer → pdflatex). The
 #     metropolis theme + Fira fonts live in texlive-latex-extra/fonts-extra;
 #     fonts-firacode adds Fira for the best metropolis output.
+#   - Extended FONT set (the font-providing recommends of the texlive packages,
+#     which --no-install-recommends would otherwise skip). Two purposes:
+#       1. The Citation Canvas table-rasteriser compiles a standalone pdflatex
+#          doc that inlines a paper's OWN preamble, so papers \usepackage font
+#          packages absent from a fixed Debian TeX Live — e.g. tgcursor.sty from
+#          `tex-gyre`, dropped by --no-install-recommends. Missing -> the table
+#          silently degraded to a raw-text DUMP in deploy (dev's MiKTeX
+#          auto-installs missing .sty on demand; Debian can't). arXiv:2506.10100.
+#       2. Slide style customization (F4.2) lets users pick deck fonts — only
+#          fonts actually present in the image are usable by Beamer/xelatex.
+#     The non-font recommends (a JRE, gv/xpdf PDF viewers) are deliberately
+#     excluded — useless for a headless compile. The table compile ALSO stubs
+#     any still-missing .sty and retries (pipelines/table_figures.py), so a font
+#     absent here can never re-introduce a raw-text dump — this set is for
+#     fidelity (real fonts vs a stubbed fallback), not correctness.
 #   - pandoc: optional LaTeX→HTML for the Citation Canvas (else pylatexenc).
 #   - poppler-utils: PDF tooling used by the pipeline.
 # BuildKit cache mounts keep downloaded .deb files + apt indices across builds,
@@ -39,6 +54,55 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     chktex \
     fonts-firacode \
     fonts-noto-cjk \
+    cm-super \
+    lmodern \
+    tex-gyre \
+    tipa \
+    texlive-plain-generic \
+    texlive-fonts-extra-links \
+    fonts-adf-accanthis \
+    fonts-adf-berenis \
+    fonts-adf-gillius \
+    fonts-adf-universalis \
+    fonts-cabin \
+    fonts-cantarell \
+    fonts-clear-sans \
+    fonts-comfortaa \
+    fonts-comic-neue \
+    fonts-croscore \
+    fonts-crosextra-caladea \
+    fonts-crosextra-carlito \
+    fonts-dejavu-core \
+    fonts-dejavu-extra \
+    fonts-ebgaramond-extra \
+    fonts-font-awesome \
+    fonts-freefont-otf \
+    fonts-freefont-ttf \
+    fonts-gfs-artemisia \
+    fonts-gfs-complutum \
+    fonts-gfs-didot \
+    fonts-gfs-neohellenic \
+    fonts-gfs-olga \
+    fonts-gfs-solomos \
+    fonts-go \
+    fonts-inter \
+    fonts-lato \
+    fonts-linuxlibertine \
+    fonts-lobstertwo \
+    fonts-noto-core \
+    fonts-noto-mono \
+    fonts-oflb-asana-math \
+    fonts-open-sans \
+    fonts-paratype \
+    fonts-roboto-slab \
+    fonts-roboto-unhinted \
+    fonts-sil-andika \
+    fonts-sil-charis \
+    fonts-sil-gentium \
+    fonts-sil-gentium-basic \
+    fonts-sil-gentiumplus \
+    fonts-sil-gentiumplus-compact \
+    fonts-stix \
     pandoc \
     poppler-utils
 
